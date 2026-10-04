@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ENV_FILE="${AGENT_RELEASE_ENV:-$ROOT/config/release.env}"
+[ -f "$ENV_FILE" ] || { echo "missing $ENV_FILE" >&2; exit 1; }
+# shellcheck disable=SC1090
+source "$ENV_FILE"
+: "${AGENT_NOTARY_PROFILE:?AGENT_NOTARY_PROFILE required}"
+APP="$ROOT/release/Sim.app"
+ZIP="$ROOT/release/Sim-notarize.zip"
+[ "$(uname -s)" = Darwin ] || { echo 'notarize requires macOS' >&2; exit 1; }
+codesign --verify --deep --strict --verbose=2 "$APP"
+rm -f "$ZIP"
+ditto -c -k --keepParent "$APP" "$ZIP"
+xcrun notarytool submit "$ZIP" --keychain-profile "$AGENT_NOTARY_PROFILE" --wait
+xcrun stapler staple "$APP"
+xcrun stapler validate "$APP"
+spctl --assess --type execute --verbose=2 "$APP"
+echo 'notarize: PASS'

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+cd "$ROOT"
+
+command -v swift >/dev/null 2>&1 || { echo 'swift is required' >&2; exit 1; }
+
+swift test
+swift build -c release
+
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git diff --check
+fi
+
+for f in scripts/*; do
+  [ -f "$f" ] || continue
+  bash -n "$f"
+done
+
+echo 'check: PASS'

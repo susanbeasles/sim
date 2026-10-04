@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ENV_FILE="${AGENT_RELEASE_ENV:-$ROOT/config/release.env}"
+[ -f "$ENV_FILE" ] || { echo "missing $ENV_FILE; copy config/release.env.example first" >&2; exit 1; }
+# shellcheck disable=SC1090
+source "$ENV_FILE"
+: "${AGENT_BUNDLE_ID:?AGENT_BUNDLE_ID required}"
+: "${AGENT_TEAM_ID:?AGENT_TEAM_ID required}"
+: "${AGENT_SIGNING_IDENTITY:?AGENT_SIGNING_IDENTITY required}"
+: "${AGENT_NOTARY_PROFILE:?AGENT_NOTARY_PROFILE required}"
+: "${AGENT_AUTH_KEY_FINGERPRINT:?AGENT_AUTH_KEY_FINGERPRINT required}"
+[ "$AGENT_TEAM_ID" != YOURTEAMID ] || { echo 'replace YOURTEAMID in release.env' >&2; exit 1; }
+
+VERSION="${AGENT_VERSION:-0.2.0}"
+IDENTITY_FILE="$ROOT/Sources/AgentCore/BuildIdentity.swift"
+BACKUP="$(mktemp)"
+cp "$IDENTITY_FILE" "$BACKUP"
+restore() { cp "$BACKUP" "$IDENTITY_FILE"; rm -f "$BACKUP"; }
+trap restore EXIT INT TERM
+
+cat > "$IDENTITY_FILE" <<SWIFT
+public enum BuildIdentity {
+    public static let bundleIdentifier = "$AGENT_BUNDLE_ID"
+    public static let expectedTeamID = "$AGENT_TEAM_ID"
+    public static let expectedAuthorizationKeySHA256 = "$AGENT_AUTH_KEY_FINGERPRINT"
+    public static let releaseBuild = true
+    public static let version = "$VERSION"
+}
+SWIFT
+
+cd "$ROOT"
+./scripts/check
+rm -rf "$ROOT/release"
+mkdir -p "$ROOT/release/Sim.app/Contents/MacOS" "$ROOT/release/Sim.app/Contents/Resources/man"
+
+if [ "$(uname -s)" = Darwin ]; then
+  swift build -c release --arch arm64
+  BIN="$ROOT/.build/arm64-apple-macosx/release/sim"
+else
+  swift build -c release
+  BIN="$ROOT/.build/release/sim"
+fi
+[ -x "$BIN" ] || { echo "built binary not found: $BIN" >&2; exit 1; }
+install -m 0755 "$BIN" "$ROOT/release/Sim.app/Contents/MacOS/sim"
+install -m 0644 "$ROOT/docs/sim.1" "$ROOT/release/Sim.app/Contents/Resources/man/sim.1"
+
+cat > "$ROOT/release/Sim.app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleDisplayName</key><string>agent</string>
+  <key>CFBundleExecutable</key><string>agent</string>
+  <key>CFBundleIdentifier</key><string>$AGENT_BUNDLE_ID</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>agent</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+</dict></plist>
+PLIST
+
+COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+cat > "$ROOT/release/Sim.app/Contents/Resources/build.json" <<JSON
+{"version":"$VERSION","commit":"$COMMIT","teamID":"$AGENT_TEAM_ID","bundleID":"$AGENT_BUNDLE_ID","authorizationKeyFingerprint":"$AGENT_AUTH_KEY_FINGERPRINT","builtAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+JSON
+
+echo "$ROOT/release/Sim.app"

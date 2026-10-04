@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+cd "$ROOT"
+./scripts/build
+./scripts/sign
+./scripts/notarize
+./scripts/install
+printf '\nrelease: PASS\n'
