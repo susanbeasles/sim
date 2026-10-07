@@ -74,3 +74,5 @@ Do not provision or overwrite a PIV slot merely to make this smoke test pass. If
 - host-to-sandbox `agent git pull` reconciliation.
 
 Those are separate layers; v0.2.0 should not claim them merely because the cryptographic local stake format exists.
+
+Release packaging accepts a new output directory: `scripts/build /absolute/path/to/new-output`. It refuses any existing output before changing the build identity, preserving earlier release artifacts. With no argument it targets `release`, which must be absent. Signing and installation scripts continue to use `release/Sim.app`; a separate output supports inspection and qualification before replacing any prior artifact through an operator-approved release procedure.
