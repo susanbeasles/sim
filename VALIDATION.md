@@ -25,17 +25,19 @@ The current suite covers:
 - immutable duplicate-tag rejection;
 - manifest discovery surviving deletion of the mutable index cache.
 
-The source package currently passes all 12 tests and release compilation in the Linux build environment used to produce the archive.
+On October 7, 2026, `./scripts/check` passed all 12 tests and release compilation on the target Mac. The installed Docker Sandboxes CLI reports v0.45.0. This verifies native compilation and CLI availability; it does not yet verify daemon access, hardware unwrap, or a complete sandbox restore.
+
+The release bundle is `Sim.app`, with executable `Contents/MacOS/sim`. Its generated Info.plist now names that installed executable. Shell syntax, whitespace checks, and a parsed-plist executable-path check passed after this correction.
 
 ## Must be validated on the target Mac
 
-The following cannot be honestly proven here because this environment does not have macOS Security.framework, the user's YubiKey, Apple Developer ID identity, or the user's local Docker Sandbox daemon:
+The following integration checks remain pending on the target Mac:
 
-1. Compile the macOS-only CryptoKit/Security.framework branches.
+1. Qualify the compiled macOS CryptoKit/Security.framework branches with the intended hardware identity.
 2. Confirm `agent key identities` sees the YubiKey PIV identity as an external token-backed key.
 3. Confirm the chosen RSA PIV identity reports `vault-ok` and performs RSA-OAEP-SHA256 unwrap with the intended PIN/touch policy.
 4. Run the complete `sbx template save --output` -> remove -> decrypt -> `sbx template load` -> create lifecycle against the installed `sbx` version.
-5. Build/sign/notarize/staple and verify the installed `Agent.app`.
+5. Build/sign/notarize/staple and verify the installed `Sim.app`.
 
 Run this smoke sequence on the Mac:
 
