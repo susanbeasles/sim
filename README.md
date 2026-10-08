@@ -1,14 +1,14 @@
-# agent
+# Sim
 
-`agent` is a native Swift controller for running Claude Code and Codex inside mountless Docker Sandboxes while keeping the real host repository outside the agent trust boundary.
+`sim` is a native Swift controller for running Claude Code and Codex inside mountless Docker Sandboxes while keeping the real host repository outside the agent trust boundary.
 
 The daily path is intentionally simple:
 
 ```zsh
-alias cc='agent claude'
-alias codex='agent codex'
+alias cc='sim claude'
+alias codex='sim codex'
 
-cd ~/code/triggr_api
+cd ~/code/backup-control
 cc
 ```
 
@@ -19,13 +19,13 @@ The vendor TUI runs inside the disposable VM. The host repository is copied in, 
 v0.2 adds a cryptographic image lineage for trusted VM baselines:
 
 ```bash
-agent stake -t 'root baseline'
+sim stake -t 'root baseline'
 # FIDO/YubiKey touch signs the exact stake manifest
 
-agent image ls
-agent image verify 0
+sim image ls
+sim image verify 0
 
-agent create --repo triggr_api -i 0
+sim create --repo backup-control -i 0
 # YubiKey PIV private-key operation unwraps the image key
 ```
 
@@ -53,7 +53,7 @@ The restore path fails closed:
 
 `index.json` is a cache, not authority. Discovery is rebuilt from manifest/signature files. Stake tags are immutable per repository and generations are unique and contiguous.
 
-The temporary plaintext stake template created by `sbx template save` is removed immediately after the encrypted export is produced. During restore, the loaded stake template is removed again after sandbox creation. A restored workspace still gets its own local baseline template for ordinary `agent reset`; reconstructing the vaulted origin is done with `agent create -i ...` in this release.
+The temporary plaintext stake template created by `sbx template save` is removed immediately after the encrypted export is produced. During restore, the loaded stake template is removed again after sandbox creation. A restored workspace still gets its own local baseline template for ordinary `agent reset`; reconstructing the vaulted origin is done with `sim create -i ...` in this release.
 
 ## Hardware-only key policy
 
@@ -64,9 +64,9 @@ sk-ssh-ed25519@openssh.com
 sk-ecdsa-sha2-nistp256@openssh.com
 ```
 
-Release builds pin that public-key SHA-256 fingerprint into the signed `Agent.app`. A plain software SSH private key is rejected.
+Release builds pin that public-key SHA-256 fingerprint into the signed `Sim.app`. A plain software SSH private key is rejected.
 
-Vault decryption accepts only a Keychain identity whose private key reports `kSecAttrTokenID`, which macOS uses to identify an external cryptographic store. Software Keychain identities are ignored. The selected identity must also support RSA-OAEP-SHA256 decrypt; `agent key identities` prints `vault-ok` only for compatible hardware identities.
+Vault decryption accepts only a Keychain identity whose private key reports `kSecAttrTokenID`, which macOS uses to identify an external cryptographic store. Software Keychain identities are ignored. The selected identity must also support RSA-OAEP-SHA256 decrypt; `sim key identities` prints `vault-ok` only for compatible hardware identities.
 
 The same physical YubiKey can therefore serve two separate purposes:
 
@@ -75,17 +75,17 @@ FIDO / ed25519-sk     sign stake and protected transaction manifests
 PIV RSA key           unwrap each staked image's random AES key
 ```
 
-No PIV slot is created, overwritten, or provisioned automatically. If `agent key identities` shows no `vault-ok` identity, stop there and inspect the YubiKey first.
+No PIV slot is created, overwritten, or provisioned automatically. If `sim key identities` shows no `vault-ok` identity, stop there and inspect the YubiKey first.
 
 ## Core invariants
 
-- `/usr/local/bin/agent` points into a Developer ID signed, hardened, notarized `Agent.app` under `/usr/local/libexec/agent`.
+- `/usr/local/bin/sim` points into a Developer ID signed, hardened, notarized `Sim.app` under `/usr/local/libexec/sim`.
 - Release builds verify their own seal, identifier, Team ID, and signing requirement before doing work.
 - Controller state lives under `/usr/local/var/agent`; configuration lives under `/usr/local/etc/agent`. Nothing uses `$HOME/.local`.
 - Source lives under `~/code` on the host and `$HOME/code` inside the VM.
 - `.git` is not copied from the host. The VM gets a synthetic repository.
-- Only `agent git ...` intentionally mutates the host repository.
-- `agent git merge`, `agent git commit`, `agent net allow`, and `agent stake` cross protected boundaries and require exact transaction signing.
+- Only `sim git ...` intentionally mutates the host repository.
+- `sim git merge`, `sim git commit`, `sim net allow`, and `sim stake` cross protected boundaries and require exact transaction signing.
 - Full audit runs the vendor as fake root inside a child user namespace while a real-VM-root supervisor records PTY/syscall evidence outside that namespace.
 - There is no controller-imposed maximum workspace/worker count.
 
@@ -112,26 +112,26 @@ Put the resulting `SHA256:...` value in `AGENT_AUTH_KEY_FINGERPRINT`, then:
 ./scripts/release
 ```
 
-`release` performs a clean release build, Developer ID signing, strict verification, notarization, stapling, Gatekeeper assessment, staged install, and installed self-check. A failed install rolls back to the prior `Agent.app`.
+`release` performs a clean release build, Developer ID signing, strict verification, notarization, stapling, Gatekeeper assessment, staged install, and installed self-check. A failed install rolls back to the prior `Sim.app`.
 
 After installation:
 
 ```bash
-agent config auth-key ~/.ssh/id_yubikey
-agent key identities
-agent config piv-cert <64-hex-certificate-sha256>
-agent doctor
+sim config auth-key ~/.ssh/id_yubikey
+sim key identities
+sim config piv-cert <64-hex-certificate-sha256>
+sim doctor
 ```
 
-`agent config piv-cert` refuses a software identity and refuses a hardware identity that cannot perform the required RSA-OAEP-SHA256 unwrap.
+`sim config piv-cert` refuses a software identity and refuses a hardware identity that cannot perform the required RSA-OAEP-SHA256 unwrap.
 
 ## Workspaces
 
 Create from host source:
 
 ```bash
-agent create --repo triggr_api --vendor cc --state clean
-agent create --repo triggr_api --vendor gpt --state local
+sim create --repo backup-control --vendor cc --state clean
+sim create --repo backup-control --vendor gpt --state local
 ```
 
 A bare repo name resolves under `~/code`. `clean` uses the selected committed branch. `local` includes current tracked changes plus nonignored untracked source and cannot be combined with a different branch.
@@ -139,7 +139,7 @@ A bare repo name resolves under `~/code`. `clean` uses the selected committed br
 Context repos are copied read-only from the controller's point of view and never become import targets:
 
 ```bash
-agent create --repo triggr_api --vendor cc \
+sim create --repo backup-control --vendor cc \
   --context workflows \
   --context sonarmd-logger
 ```
@@ -161,29 +161,29 @@ agent shell
 Create an immutable-name stake from the active workspace:
 
 ```bash
-agent stake -t 'root baseline'
+sim stake -t 'root baseline'
 # alias: agent pew -t 'root baseline'
 ```
 
 Inspect and verify:
 
 ```bash
-agent image ls
-agent image verify 0
-agent image verify 0 --deep   # also performs PIV unwrap + plaintext verification
+sim image ls
+sim image verify 0
+sim image verify 0 --deep   # also performs PIV unwrap + plaintext verification
 ```
 
 Restore exact generation 0:
 
 ```bash
-agent create --repo triggr_api -i 0
+sim create --repo backup-control -i 0
 ```
 
 You may also select by immutable tag or stake UUID:
 
 ```bash
-agent create --repo triggr_api -i 'root baseline'
-agent create --repo triggr_api -i 7f2a7c5d-....
+sim create --repo backup-control -i 'root baseline'
+sim create --repo backup-control -i 7f2a7c5d-....
 ```
 
 `--image` cannot be combined with `--branch`, `--state`, or `--context`: the image already defines those bytes and metadata.
@@ -202,45 +202,45 @@ agent review
 Import all candidate paths:
 
 ```bash
-agent git merge --theirs
+sim git merge --theirs
 ```
 
 3-way merge against the exact copied baseline:
 
 ```bash
-agent git merge
+sim git merge
 ```
 
 Keep host versions:
 
 ```bash
-agent git merge --mine
+sim git merge --mine
 ```
 
 Selected paths:
 
 ```bash
-agent git merge --theirs -- src/a.ts src/b.ts
+sim git merge --theirs -- src/a.ts src/b.ts
 ```
 
 Create exactly one local commit from a clean host working tree:
 
 ```bash
-agent git commit -m 'Implement the thing'
+sim git commit -m 'Implement the thing'
 ```
 
-`agent git pull` remains reserved in v0.2.0 rather than performing a hidden overwrite.
+`sim git pull` remains reserved in v0.2.0 rather than performing a hidden overwrite.
 
 ## Audit
 
 ```bash
 agent logs
 agent logs -f
-agent audit sessions
-agent audit actions -n 250
-agent audit actions --grep 'assets/logo.png'
-agent audit verify
-agent audit export WORKSPACE -o ~/Desktop/agent-audit
+sim audit sessions
+sim audit actions -n 250
+sim audit actions --grep 'assets/logo.png'
+sim audit verify
+sim audit export WORKSPACE -o ~/Desktop/agent-audit
 ```
 
 Full audit records the local PTY stream plus process/syscall activity and a hash-chained guest head. It does not claim to decrypt vendor HTTPS.
@@ -275,3 +275,17 @@ All four providers should receive only ciphertext plus signed metadata. Dropbox 
 ## Current validation boundary
 
 The package is exercised with Swift unit tests and release compilation on Linux. The macOS-only `Security.framework` / CryptoKit PIV path and real Docker Sandbox lifecycle must be validated on the target Mac because this build environment has neither the user's YubiKey nor macOS Security.framework nor the local `sbx` daemon. See `VALIDATION.md` and `QUICKSTART.md` for the exact smoke test.
+
+### Preserve and select release artifacts
+
+Use `./scripts/release /absolute/path/to/new-output` to build and carry the same
+`Sim.app` through signing, notarization and installation. The output directory
+must be new; an existing directory is rejected. Each later step also accepts its
+bundle explicitly: `scripts/sign APP_PATH`, `scripts/notarize APP_PATH`, and
+`scripts/install APP_PATH`. No argument retains the default `release/Sim.app`.
+Notarization uses its own temporary ZIP and preserves earlier release archives.
+
+`Tests/release-artifacts.sh` checks path selection (including spaces), ZIP
+preservation and failure cleanup with fixture tools. It does not qualify Apple
+signing, notarization, Gatekeeper or privileged installation. Those require the
+configured personal Developer ID certificate and notary profile.

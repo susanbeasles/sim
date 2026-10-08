@@ -1,6 +1,6 @@
-# `agent` v0.2.0 quick start
+# `sim` v0.2.0 quick start
 
-This is a source release. Build/sign/notarize it on the Mac that owns the Developer ID identity; do not install an unsigned replacement into `/usr/local/bin/agent`.
+This is a source release. Build/sign/notarize it on the Mac that owns the Developer ID identity; do not install an unsigned replacement into `/usr/local/bin/sim`.
 
 ## 1. Unpack and validate source
 
@@ -51,15 +51,15 @@ Store notarization credentials in Keychain once, then release:
 Verify:
 
 ```bash
-command -v agent
-agent version
-agent doctor
+command -v sim
+sim version
+sim doctor
 ```
 
 ## 3. Configure the FIDO signer
 
 ```bash
-agent config auth-key ~/.ssh/id_yubikey
+sim config auth-key ~/.ssh/id_yubikey
 ```
 
 A plain `ssh-ed25519`/RSA software key is intentionally rejected. The public-key fingerprint must also match the fingerprint embedded in the signed release build.
@@ -69,7 +69,7 @@ A plain `ssh-ed25519`/RSA software key is intentionally rejected. The public-key
 Insert the YubiKey and run:
 
 ```bash
-agent key identities
+sim key identities
 ```
 
 Output is:
@@ -81,8 +81,8 @@ Output is:
 Only identities backed by an external macOS token store are shown. Pick a `vault-ok` identity and configure its certificate fingerprint:
 
 ```bash
-agent config piv-cert <CERT_SHA256>
-agent doctor
+sim config piv-cert <CERT_SHA256>
+sim doctor
 ```
 
 If there is no `vault-ok` identity, **stop**. This package does not overwrite or provision PIV slots automatically. Inspect the existing PIV layout first, then decide deliberately whether to create a dedicated RSA key-management identity.
@@ -90,20 +90,20 @@ If there is no `vault-ok` identity, **stop**. This package does not overwrite or
 ## 5. Create a normal sandbox
 
 ```bash
-cd ~/code/triggr_api
-agent create --repo triggr_api --vendor cc --state clean
+cd ~/code/backup-control
+sim create --repo backup-control --vendor cc --state clean
 ```
 
 Or use Codex:
 
 ```bash
-agent create --repo triggr_api --vendor gpt --state clean
+sim create --repo backup-control --vendor gpt --state clean
 ```
 
 ## 6. Stake generation 0
 
 ```bash
-agent stake -t 'root baseline'
+sim stake -t 'root baseline'
 ```
 
 Expected behavior:
@@ -137,19 +137,19 @@ The encrypted object/manifests live under:
 Cheap verification (manifest lineage + signature + ciphertext digest):
 
 ```bash
-agent image verify 0
+sim image verify 0
 ```
 
 Deep verification also unwraps/decrypts and checks plaintext SHA-256:
 
 ```bash
-agent image verify 0 --deep
+sim image verify 0 --deep
 ```
 
 Create a new sandbox from the exact genesis image:
 
 ```bash
-agent create --repo triggr_api -i 0
+sim create --repo backup-control -i 0
 ```
 
 Expected trust ceremony:
@@ -167,8 +167,8 @@ The restore path removes any pre-existing Docker template carrying the signed te
 ## 8. Daily aliases
 
 ```zsh
-alias cc='agent claude'
-alias codex='agent codex'
+alias cc='sim claude'
+alias codex='sim codex'
 ```
 
 Do not install `/usr/local/bin/cc`; `/usr/bin/cc` is the system C compiler.

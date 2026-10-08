@@ -34,7 +34,7 @@ The release bundle is `Sim.app`, with executable `Contents/MacOS/sim`. Its gener
 The following integration checks remain pending on the target Mac:
 
 1. Qualify the compiled macOS CryptoKit/Security.framework branches with the intended hardware identity.
-2. Confirm `agent key identities` sees the YubiKey PIV identity as an external token-backed key.
+2. Confirm `sim key identities` sees the YubiKey PIV identity as an external token-backed key.
 3. Confirm the chosen RSA PIV identity reports `vault-ok` and performs RSA-OAEP-SHA256 unwrap with the intended PIN/touch policy.
 4. Run the complete `sbx template save --output` -> remove -> decrypt -> `sbx template load` -> create lifecycle against the installed `sbx` version.
 5. Build/sign/notarize/staple and verify the installed `Sim.app`.
@@ -46,17 +46,17 @@ cd ~/code/agent-cli-v0.2.0
 ./scripts/check
 ./scripts/release
 
-agent config auth-key ~/.ssh/id_yubikey
-agent key identities
-agent config piv-cert <VAULT_OK_CERT_SHA256>
-agent doctor
+sim config auth-key ~/.ssh/id_yubikey
+sim key identities
+sim config piv-cert <VAULT_OK_CERT_SHA256>
+sim doctor
 
-cd ~/code/triggr_api
-agent create --repo triggr_api --vendor cc --state clean
-agent stake -t 'v0.2 smoke root'
-agent image verify 0
-agent image verify 0 --deep
-agent create --repo triggr_api -i 0 --name triggr-api-genesis-smoke
+cd ~/code/backup-control
+sim create --repo backup-control --vendor cc --state clean
+sim stake -t 'v0.2 smoke root'
+sim image verify 0
+sim image verify 0 --deep
+sim create --repo backup-control -i 0 --name triggr-api-genesis-smoke
 agent status triggr-api-genesis-smoke
 ```
 
@@ -71,7 +71,7 @@ Do not provision or overwrite a PIV slot merely to make this smoke test pass. If
 - Remote anti-rollback/head anchoring.
 - `agent reset --origin` hardware-gated reconstruction.
 - continuous filesystem/CAS time-machine revisions and `agent fork REV`.
-- host-to-sandbox `agent git pull` reconciliation.
+- host-to-sandbox `sim git pull` reconciliation.
 
 Those are separate layers; v0.2.0 should not claim them merely because the cryptographic local stake format exists.
 

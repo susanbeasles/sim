@@ -6,11 +6,16 @@ ENV_FILE="${AGENT_RELEASE_ENV:-$ROOT/config/release.env}"
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 : "${AGENT_NOTARY_PROFILE:?AGENT_NOTARY_PROFILE required}"
-APP="$ROOT/release/Sim.app"
-ZIP="$ROOT/release/Sim-notarize.zip"
+[ "$#" -le 1 ] || { echo "usage: scripts/notarize [APP_PATH]" >&2; exit 64; }
+APP="${1:-$ROOT/release/Sim.app}"
+[ -d "$APP" ] || { echo "app bundle missing: $APP" >&2; exit 1; }
+APP="$(cd "$APP" && pwd -P)"
 [ "$(uname -s)" = Darwin ] || { echo 'notarize requires macOS' >&2; exit 1; }
 codesign --verify --deep --strict --verbose=2 "$APP"
-rm -f "$ZIP"
+# Create only our own temporary archive; preserve prior release ZIPs.
+TASK_DIR="$(mktemp -d "$(dirname "$APP")/.sim-notarize.XXXXXX")"
+trap 'rm -rf "$TASK_DIR"' EXIT
+ZIP="$TASK_DIR/Sim-notarize.zip"
 ditto -c -k --keepParent "$APP" "$ZIP"
 xcrun notarytool submit "$ZIP" --keychain-profile "$AGENT_NOTARY_PROFILE" --wait
 xcrun stapler staple "$APP"

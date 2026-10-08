@@ -6,14 +6,13 @@ ENV_FILE="${AGENT_RELEASE_ENV:-$ROOT/config/release.env}"
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 : "${AGENT_SIGNING_IDENTITY:?AGENT_SIGNING_IDENTITY required}"
-APP="$ROOT/release/Sim.app"
+[ "$#" -le 1 ] || { echo "usage: scripts/sign [APP_PATH]" >&2; exit 64; }
+APP="${1:-$ROOT/release/Sim.app}"
+[ -d "$APP" ] || { echo "app bundle missing: $APP" >&2; exit 1; }
+APP="$(cd "$APP" && pwd -P)"
 [ -d "$APP" ] || { echo 'run scripts/build first' >&2; exit 1; }
 [ "$(uname -s)" = Darwin ] || { echo 'sign requires macOS' >&2; exit 1; }
 
-security find-identity -v -p codesigning | grep -F "$AGENT_SIGNING_IDENTITY" >/dev/null || {
-  echo "Developer ID signing identity not found: $AGENT_SIGNING_IDENTITY" >&2
-  exit 1
-}
 
 codesign --force --options runtime --timestamp --sign "$AGENT_SIGNING_IDENTITY" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"

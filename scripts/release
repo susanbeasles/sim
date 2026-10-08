@@ -2,8 +2,12 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$ROOT"
-./scripts/build
-./scripts/sign
-./scripts/notarize
-./scripts/install
+[ "$#" -le 1 ] || { echo 'usage: scripts/release [NEW_OUTPUT_DIRECTORY]' >&2; exit 64; }
+OUTPUT="${1:-$ROOT/release}"
+./scripts/build "$OUTPUT"
+OUTPUT="$(cd "$OUTPUT" && pwd -P)"
+APP="$OUTPUT/Sim.app"
+./scripts/sign "$APP"
+./scripts/notarize "$APP"
+./scripts/install "$APP"
 printf '\nrelease: PASS\n'
