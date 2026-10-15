@@ -1,0 +1,5 @@
+import {readdir,lstat,readFile} from 'node:fs/promises';
+import {join} from 'node:path';
+import {digest,canonical,requireThat} from './canonical.mjs';
+export async function releaseManifest(root){const files=[];async function walk(relative){for(const entry of await readdir(join(root,relative),{withFileTypes:true})){const name=relative?relative+'/'+entry.name:entry.name;if(['release.json','release.sig'].includes(name))continue;const path=join(root,name),info=await lstat(path);requireThat(!info.isSymbolicLink(),'release symlinks are forbidden');if(info.isDirectory())await walk(name);else{requireThat(info.isFile(),'release contains a special file');files.push({path:name,sha256:digest(await readFile(path)),mode:info.mode&0o777});}}}await walk('');return{schema:1,files:files.sort((a,b)=>a.path.localeCompare(b.path))};}
+export async function verifyReleaseFiles(root,manifest){requireThat(manifest.schema===1,'unknown release schema');const current=await releaseManifest(root);requireThat(canonical(current)===canonical(manifest),'release payload differs from signed manifest');}

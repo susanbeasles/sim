@@ -289,3 +289,12 @@ Notarization uses its own temporary ZIP and preserves earlier release archives.
 preservation and failure cleanup with fixture tools. It does not qualify Apple
 signing, notarization, Gatekeeper or privileged installation. Those require the
 configured personal Developer ID certificate and notary profile.
+
+## Remote agent fleet (experimental)
+
+The [remote fleet implementation](fleet/README.md) adds terminal deployment,
+hardware-signed grants, OIDC workload identity, GCP nested microVM workers and
+agent root inside rootless Podman containers. It includes planning for 200
+agents, encrypted evidence/results and a separate model/package gateway.
+Read its qualification requirements before deployment; real cloud capacity and
+hardware-token operation are not established by the local test suite.

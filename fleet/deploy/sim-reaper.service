@@ -1,0 +1,13 @@
+[Unit]
+Description=SIM independently scheduled expired host cleanup
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=simfleet
+Group=simfleet
+Environment=NODE_EXTRA_CA_CERTS=/etc/sim-fleet/ca.crt
+ExecStart=/usr/local/bin/node /opt/sim-fleet/bin/service.mjs /etc/sim-fleet/service.json
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true

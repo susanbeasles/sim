@@ -1,0 +1,31 @@
+[Unit]
+Description=SIM private fleet service
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+User=simfleet
+Group=simfleet
+SupplementaryGroups=kvm
+Environment=HOME=/var/lib/sim-fleet
+Environment=NODE_EXTRA_CA_CERTS=/etc/sim-fleet/ca.crt
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStartPre=/usr/local/bin/node /opt/sim-fleet/bin/tls-secret.mjs --service /etc/sim-fleet/service.json
+ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/sim-fleet/bin/service.mjs /etc/sim-fleet/service.json
+Restart=on-failure
+RestartSec=10
+UMask=0077
+RuntimeDirectory=sim-worker
+RuntimeDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sim-fleet /run/sim-worker /etc/sim-fleet/tls
+LimitNOFILE=65536
+TasksMax=16384
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

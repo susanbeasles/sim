@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Privileged launcher is outside the agent's container and never mounted into it.
+set -euo pipefail
+[[ $(id -u) == 0 ]] || exit 1
+echo $$ > /sys/fs/cgroup/sim-workers/manager/cgroup.procs
+exec runuser -u simworker -- env XDG_RUNTIME_DIR=/run/user/2000 \
+  podman --cgroup-manager=cgroupfs --root=/var/lib/sim-container-store \
+  --runroot=/run/user/2000/containers "$@"

@@ -1,0 +1,7 @@
+#!/usr/bin/env python3
+import base64, os, sys
+if os.geteuid() != 0 or len(sys.argv) != 3 or not sys.argv[1].isdigit() or len(sys.argv[1]) > 16 or len(sys.argv[2]) > 32768:
+    sys.exit(64)
+data = base64.b64decode(sys.argv[2], validate=True)
+with open('/var/lib/sim-input/queue/' + sys.argv[1].zfill(16), 'xb') as f:
+    f.write(data)

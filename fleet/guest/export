@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Read Podman's archive as guest root; never ask UID 2000 to write root paths."""
+import base64, json, os, pathlib, re, subprocess, sys, tarfile
+
+
+def read_candidate(stream, baseline, ignored, limit=48 * 1024 * 1024):
+    files, seen, size = [], set(), 0
+    with tarfile.open(fileobj=stream, mode='r|') as archive:
+        for item in archive:
+            name = item.name
+            while name.startswith('./'):
+                name = name[2:]
+            if name in ('', '.'):
+                continue
+            parts = name.rstrip('/').split('/')
+            if name.startswith('/') or any(p in ('', '.', '..') for p in parts) or '\\' in name:
+                raise ValueError('unsafe candidate archive path')
+            if any(p.lower() == '.git' for p in parts):
+                continue
+            if name not in baseline and ignored(name):
+                continue
+            if item.isdir():
+                continue
+            if not item.isfile() or name in seen:
+                raise ValueError('candidate contains a link, special file or duplicate')
+            seen.add(name)
+            size += item.size
+            if size > limit or len(files) >= 50000:
+                raise ValueError('candidate exceeds limit')
+            with archive.extractfile(item) as source:
+                content = source.read(item.size + 1)
+            if len(content) != item.size:
+                raise ValueError('candidate archive truncated')
+            files.append({'path': name, 'mode': 493 if item.mode & 0o111 else 420,
+                          'data': base64.b64encode(content).decode('ascii')})
+    return {'schema': 1, 'baseCommit': '0' * 40, 'files': files}
+
+
+def main():
+    if os.geteuid() != 0 or len(sys.argv) != 2 or not re.fullmatch(r'task-[a-z0-9-]+', sys.argv[1]):
+        sys.exit(64)
+    with open('/var/lib/sim-audit/baseline-paths.json') as source:
+        baseline = set(json.load(source))
+    # Use only the original source's ignore rules and a fresh root-owned .git.
+    # The agent's .git/config, attributes and hooks are never interpreted.
+    env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+    env.update({'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null'})
+    git = ['git', '-c', 'safe.directory=/var/lib/sim-input/source', '-C', '/var/lib/sim-input/source']
+    cache = {}
+    def ignored(name):
+        components = name.split('/')
+        for end in range(1, len(components) + 1):
+            prefix = '/'.join(components[:end])
+            if prefix not in cache:
+                result = subprocess.run(git + ['check-ignore', '--quiet', '--no-index', '--', prefix], env=env)
+                if result.returncode not in (0, 1):
+                    raise ValueError('candidate ignore evaluation failed')
+                cache[prefix] = result.returncode == 0
+            if cache[prefix]:
+                return True
+        return False
+    command = ['/usr/local/libexec/sim-guest/podman', 'cp', sys.argv[1] + ':/work/.', '-']
+    process = subprocess.Popen(command, stdout=subprocess.PIPE)
+    try:
+        candidate = read_candidate(process.stdout, baseline, ignored)
+        if process.wait() != 0:
+            raise ValueError('candidate copy failed')
+        with open('/var/lib/sim-output/candidate.json', 'x') as target:
+            json.dump(candidate, target, separators=(',', ':'))
+    finally:
+        process.stdout.close()
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+
+
+if __name__ == '__main__':
+    main()

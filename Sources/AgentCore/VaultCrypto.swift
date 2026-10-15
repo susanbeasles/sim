@@ -46,6 +46,31 @@ public struct HardwareVaultCrypto: Sendable {
 
     public init() {}
 
+    public func unwrapDataKey(wrapped: Data, recipientCertificateSHA256: String) throws -> Data {
+        #if canImport(CryptoKit) && canImport(Security)
+        let fingerprint = Self.normalizeFingerprint(recipientCertificateSHA256)
+        guard fingerprint.count == 64 else { throw AgentError.malformed("invalid PIV certificate fingerprint") }
+        let identity = try macIdentity(fingerprint: fingerprint)
+        var privateKey: SecKey?
+        guard SecIdentityCopyPrivateKey(identity, &privateKey) == errSecSuccess,
+              let privateKey, Self.hardwareTokenID(privateKey) != nil,
+              Self.isRSA(privateKey),
+              SecKeyIsAlgorithmSupported(privateKey, .decrypt, .rsaEncryptionOAEPSHA256) else {
+            throw AgentError.authorizationRequired("hardware PIV RSA-OAEP key unavailable")
+        }
+        FileHandle.standardError.write(Data("Touch YubiKey to unlock the fleet session key.\n".utf8))
+        var error: Unmanaged<CFError>?
+        guard let result = SecKeyCreateDecryptedData(privateKey, .rsaEncryptionOAEPSHA256, wrapped as CFData, &error) else {
+            throw AgentError.authorizationRequired("hardware fleet key unwrap failed: \(Self.describe(error))")
+        }
+        let data = result as Data
+        guard data.count == 32 else { throw AgentError.trustFailure("fleet data key is not 32 bytes") }
+        return data
+        #else
+        throw AgentError.unsupported("fleet key unwrap requires macOS Security.framework and a hardware PIV identity")
+        #endif
+    }
+
     public func identities() throws -> [PIVIdentitySummary] {
         #if canImport(CryptoKit) && canImport(Security)
         return try macIdentities().compactMap { identity in

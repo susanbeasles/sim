@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $(id -u) == 0 ]] || { echo 'guest root supervisor required' >&2; exit 1; }
+[[ ${1:-} =~ ^task-[a-z0-9-]+$ ]] || exit 64
+[[ ${2:-} =~ ^[a-z0-9][a-z0-9./:_-]+@sha256:[a-f0-9]{64}$ ]] || exit 64
+[[ ${3:-} =~ ^10\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'gateway must use a fixed private IPv4 address' >&2; exit 64; }
+[[ ${4:-} =~ ^[0-9]+$ && ${5:-} =~ ^[0-9]+$ && ${6:-} =~ ^[0-9]+$ ]] || exit 64
+for tool in podman python3 strace script setpriv unshare git nft; do command -v "$tool" >/dev/null; done
+id simworker >/dev/null
+[[ $(id -u simworker) != 0 ]]
+[[ $(id -u simworker) == 2000 ]]
+grep -q '^simworker:' /etc/subuid
+grep -q '^simworker:' /etc/subgid
+install -d -m 0700 -o simworker -g simworker /run/user/2000
+install -d -m 0700 /var/lib/sim-audit /var/lib/sim-output
+install -d -m 0700 /var/lib/sim-input/queue
+# Allocate a dedicated, finite filesystem for all rootless container writes.
+# Reservation fails before the agent starts if the guest disk cannot hold it.
+fallocate -l "$(($4 * 1024 * 1024))" /var/lib/sim-container-store.img
+mkfs.ext4 -q -m 0 /var/lib/sim-container-store.img
+install -d -m 0700 /var/lib/sim-container-store
+mount -o loop,nodev,nosuid /var/lib/sim-container-store.img /var/lib/sim-container-store
+chown simworker:simworker /var/lib/sim-container-store
+[[ $(stat -fc %T /sys/fs/cgroup) == cgroup2fs ]]
+echo '+cpu +memory +pids' > /sys/fs/cgroup/cgroup.subtree_control
+mkdir /sys/fs/cgroup/sim-workers
+echo '+cpu +memory +pids' > /sys/fs/cgroup/sim-workers/cgroup.subtree_control
+mkdir /sys/fs/cgroup/sim-workers/manager
+chown simworker:simworker /sys/fs/cgroup/sim-workers
+for file in cgroup.procs cgroup.threads cgroup.subtree_control; do
+  chown simworker:simworker "/sys/fs/cgroup/sim-workers/$file"
+done
+nft -f - <<RULES
+table inet sim_worker {
+  chain output {
+    type filter hook output priority -10; policy accept;
+    meta skuid 2000 ip daddr $3 tcp dport 7661 accept
+    meta skuid 2000 reject
+  }
+  chain forward {
+    type filter hook forward priority -10; policy drop;
+  }
+}
+RULES
+runtime=(/usr/local/libexec/sim-guest/podman)
+[[ $("${runtime[@]}" info --format '{{.Host.Security.Rootless}}') == true ]]
+"${runtime[@]}" load --input /opt/sim-worker-image.tar >/dev/null
+"${runtime[@]}" image exists "$2"
+"${runtime[@]}" create --name "$1" --pull=never --user 0:0 --interactive --tty \
+  --network=pasta --pid=private --ipc=private --uts=private \
+  --security-opt=no-new-privileges --pids-limit=4096 \
+  --cgroup-parent=/sim-workers --cpus="$5" --memory="${6}m" \
+  --ulimit=nofile=8192:8192 --ulimit=nproc=4096:4096 \
+  --workdir=/work "$2" python3 -c 'import json,os,time
+p="/run/sim-command.json"
+while not os.path.isfile(p): time.sleep(0.05)
+with open(p) as f: d=json.load(f)
+os.environ.update(d["environment"])
+os.execvpe(d["vendor"],[d["vendor"]]+d["args"],os.environ)'
+chown -R simworker:simworker /var/lib/sim-input/source
+"${runtime[@]}" cp /var/lib/sim-input/source/. "$1":/work/
+"${runtime[@]}" cp /usr/local/share/ca-certificates/sim-fleet.crt "$1":/usr/local/share/ca-certificates/sim-fleet.crt
+# Preserve the exact baseline list, including tracked-but-ignored source files.
+python3 - <<'BASELINE'
+import json, os
+root = '/var/lib/sim-input/source'
+paths = [os.path.relpath(os.path.join(d, n), root) for d, _, names in os.walk(root) for n in names]
+with open('/var/lib/sim-audit/baseline-paths.json', 'x') as f:
+    json.dump(paths, f)
+BASELINE
+env GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c safe.directory=/var/lib/sim-input/source -C /var/lib/sim-input/source init -q
+"${runtime[@]}" start "$1" >/dev/null
+"${runtime[@]}" exec "$1" sh -c 'test "$(id -u)" = 0 && update-ca-certificates >/dev/null && git init -q && git -c user.name=sim-agent -c user.email=agent@invalid add -f -A && git -c user.name=sim-agent -c user.email=agent@invalid commit -q --allow-empty -m SIM_BASELINE'
+# The outer guest user must remain unprivileged. Container root maps to this UID.
+pid=$("${runtime[@]}" inspect --format '{{.State.Pid}}' "$1")
+[[ $(stat -c %u "/proc/$pid") == "$(id -u simworker)" ]]
+printf '%s\n' "$pid" > /var/lib/sim-audit/container-pid
+

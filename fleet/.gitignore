@@ -1,0 +1,12 @@
+local/
+.pki/
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars
+*.auto.tfvars
+*.pem
+
+__pycache__/
