@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Creates private service certificates locally. Upload only each service's
+# own JSON payload to its Secret Manager secret; keep the CA key offline.
+set -euo pipefail
+[[ $# == 1 ]] || { echo 'usage: tls-init NEW_PRIVATE_DIRECTORY' >&2; exit 64; }
+umask 077
+mkdir "$1"
+directory=$(cd "$1" && pwd -P)
+openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 \
+  -keyout "$directory/ca.key" -out "$directory/ca.crt" -subj '/CN=SIM Private Fleet CA' \
+  -addext 'basicConstraints=critical,CA:TRUE' -addext 'keyUsage=critical,keyCertSign,cRLSign' 2>/dev/null
+for role in controller gateway collector; do
+  case "$role" in controller) address=10.20.0.2 ;; gateway) address=10.20.0.3 ;; collector) address=10.20.0.4 ;; esac
+  openssl req -new -newkey rsa:3072 -sha256 -nodes -keyout "$directory/$role.key" \
+    -out "$directory/$role.csr" -subj "/CN=$role" 2>/dev/null
+  printf 'subjectAltName=IP:%s,IP:127.0.0.1\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature,keyEncipherment\n' "$address" > "$directory/$role.ext"
+  openssl x509 -req -in "$directory/$role.csr" -CA "$directory/ca.crt" -CAkey "$directory/ca.key" \
+    -CAcreateserial -out "$directory/$role.crt" -days 90 -sha256 -extfile "$directory/$role.ext" 2>/dev/null
+  python3 - "$directory" "$role" <<'PY'
+import json, pathlib, sys
+root, role = pathlib.Path(sys.argv[1]), sys.argv[2]
+(root / (role + '.json')).write_text(json.dumps({'certificate': (root / (role + '.crt')).read_text(), 'privateKey': (root / (role + '.key')).read_text()}))
+PY
+done
+printf 'Public CA: %s/ca.crt\nService payloads: %s/{controller,gateway,collector}.json\n' "$directory" "$directory"

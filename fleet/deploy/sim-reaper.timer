@@ -1,0 +1,11 @@
+[Unit]
+Description=Remove expired SIM worker hosts independently of scheduler health
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+Persistent=true
+Unit=sim-reaper.service
+
+[Install]
+WantedBy=timers.target

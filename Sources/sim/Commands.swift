@@ -76,6 +76,7 @@ struct AgentCLI {
         guard let command = args.first else { printHelp(); return 0 }
         let rest = Array(args.dropFirst())
         switch command {
+        case "fleet", "remote": return try await FleetCLI.run(rest)
         case "-h", "--help", "help": printHelp(); return 0
         case "claude", "cc": return try await vendor(.claude, args: rest)
         case "codex", "gpt": return try await vendor(.codex, args: rest)

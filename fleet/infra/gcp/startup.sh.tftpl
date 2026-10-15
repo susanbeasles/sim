@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+install -d -m 0700 /etc/sim-fleet
+printf '%s' '${policy}' | base64 -d > /etc/sim-fleet/policy.json
+printf '%s' '${service}' | base64 -d > /etc/sim-fleet/service.json
+printf '%s' '${ca}' | base64 -d > /etc/sim-fleet/ca.crt
+if [[ -b /dev/disk/by-id/google-sim-state ]]; then
+  if ! blkid /dev/disk/by-id/google-sim-state >/dev/null; then
+    mkfs.ext4 /dev/disk/by-id/google-sim-state
+  fi
+  install -d -m 0700 /var/lib/sim-fleet
+  mount /dev/disk/by-id/google-sim-state /var/lib/sim-fleet
+fi
+install -d -m 0700 /etc/sim-fleet/tls
+chown -R simfleet:simfleet /etc/sim-fleet /var/lib/sim-fleet
+if [[ '${role}' == reaper ]]; then
+  systemctl enable --now sim-reaper.timer
+else
+  systemctl enable --now sim-fleet.service
+fi

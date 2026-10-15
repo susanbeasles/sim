@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Run on a disposable Ubuntu 24.04 image builder after reviewing the inputs.
+set -euo pipefail
+# This reviewed bootstrap uses only host tools until every bundle file is authenticated.
+verify_release() {
+  [[ $2 =~ ^[a-f0-9]{64}$ && $(sha256sum "$1/release.json" | cut -d' ' -f1) == "$2" ]] || { echo 'release digest rejected' >&2; return 1; }
+  [[ $(awk '{print $1}' "$3") == sk-* ]] || { echo 'pinned FIDO public key required' >&2; return 1; }
+  local allowed
+  allowed=$(mktemp)
+  printf 'sim-owner %s\n' "$(cat "$3")" > "$allowed"
+  if ! ssh-keygen -Y verify -f "$allowed" -I sim-owner -n agent-control -s "$1/release.sig" < "$1/release.json"; then rm -f "$allowed"; return 1; fi
+  rm -f "$allowed"
+  python3 - "$1" <<'VERIFY'
+import hashlib, json, os, pathlib, stat, sys
+root = pathlib.Path(sys.argv[1])
+with open(root / 'release.json', 'rb') as f:
+    manifest = json.load(f)
+if manifest.get('schema') != 1 or not isinstance(manifest.get('files'), list):
+    raise ValueError('invalid release manifest')
+expected = {item['path']: item for item in manifest['files']}
+if len(expected) != len(manifest['files']):
+    raise ValueError('duplicate release paths')
+actual = set()
+for directory, dirs, names in os.walk(root, followlinks=False):
+    for name in dirs + names:
+        path = pathlib.Path(directory) / name
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError('release symlink rejected')
+        if stat.S_ISDIR(info.st_mode):
+            continue
+        relative = path.relative_to(root).as_posix()
+        if relative in ('release.json', 'release.sig'):
+            continue
+        if not stat.S_ISREG(info.st_mode) or relative not in expected:
+            raise ValueError('unexpected release payload')
+        item = expected[relative]
+        if item['mode'] != stat.S_IMODE(info.st_mode) or item['sha256'] != hashlib.sha256(path.read_bytes()).hexdigest():
+            raise ValueError('release payload authentication failed')
+        actual.add(relative)
+if actual != set(expected):
+    raise ValueError('missing release payload')
+VERIFY
+}
+if [[ ${1:-} == --verify-only && $# == 4 ]]; then verify_release "$2" "$3" "$4"; exit; fi
+[[ $(id -u) == 0 ]] || { echo 'image-builder root is required' >&2; exit 1; }
+[[ $# == 8 ]] || { echo 'usage: install-host RELEASE RELEASE_SHA PUBLIC_KEY NODE_TAR NODE_SHA SBX_DEB SBX_SHA ROLE' >&2; exit 64; }
+release=$1 release_sha=$2 public_key=$3 node_tar=$4 node_sha=$5 sbx_deb=$6 sbx_sha=$7 role=$8
+[[ $node_sha =~ ^[a-f0-9]{64}$ && $sbx_sha =~ ^[a-f0-9]{64}$ && $release_sha =~ ^[a-f0-9]{64}$ ]]
+[[ $role == trusted || $role == worker ]]
+[[ $(sha256sum "$node_tar" | cut -d' ' -f1) == "$node_sha" ]]
+[[ $(sha256sum "$sbx_deb" | cut -d' ' -f1) == "$sbx_sha" ]]
+verify_release "$release" "$release_sha" "$public_key"
+mkdir -p /usr/local/libexec/sim-node
+tar -xf "$node_tar" --strip-components=1 -C /usr/local/libexec/sim-node
+[[ $(/usr/local/libexec/sim-node/bin/node --version) == v24.* ]]
+ln -s /usr/local/libexec/sim-node/bin/node /usr/local/bin/node
+getent group kvm >/dev/null || groupadd --system kvm
+id simfleet >/dev/null 2>&1 || useradd --system --home-dir /var/lib/sim-fleet --create-home --shell /bin/bash --groups kvm simfleet
+install -d -m 0755 /opt/sim-fleet
+cp -R "$release"/. /opt/sim-fleet/
+if [[ $role == worker ]]; then
+  apt-get update
+  apt-get install -y "$sbx_deb"
+fi
+install -m 0644 "$release/deploy/sim-fleet.service" /etc/systemd/system/sim-fleet.service
+install -m 0644 "$release/deploy/sim-reaper.service" /etc/systemd/system/sim-reaper.service
+install -m 0644 "$release/deploy/sim-reaper.timer" /etc/systemd/system/sim-reaper.timer
+systemctl daemon-reload
+# Enrollment credentials, fleet keys and TLS private keys are not image inputs.
+# Record installed package versions and qualify a real sbx guest before publishing.
+dpkg-query -W -f='${Package}\t${Version}\n' > /opt/sim-image-packages.txt

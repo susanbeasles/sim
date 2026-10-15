@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Attach guest-root observation before releasing the rootless agent process."""
+import base64, glob, json, os, re, selectors, subprocess, sys, time, threading
+if os.geteuid() != 0 or len(sys.argv) != 2 or not re.fullmatch(r'task-[a-z0-9-]+', sys.argv[1]):
+    sys.exit(64)
+task = sys.argv[1]
+data = json.load(sys.stdin)
+allowed = {'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'SIM_TASK_ID', 'NODE_EXTRA_CA_CERTS', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'NO_PROXY', 'no_proxy', 'NODE_USE_ENV_PROXY', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'}
+if data.get('vendor') not in ('claude', 'codex') or not isinstance(data.get('args'), list):
+    sys.exit(64)
+if any(k not in allowed or not isinstance(v, str) or chr(0) in v for k, v in data.get('environment', {}).items()):
+    sys.exit(64)
+if any(not isinstance(a, str) or chr(0) in a for a in data['args']):
+    sys.exit(64)
+runtime = ['/usr/local/libexec/sim-guest/podman']
+audit = '/var/lib/sim-audit'
+with open(audit + '/container-pid') as f:
+    pid = int(f.read())
+observer = subprocess.Popen(['strace', '-ff', '-ttt', '-T', '-yy', '-s', '4096', '-o', audit + '/trace', '-p', str(pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+attached = False
+for _ in range(100):
+    with open('/proc/' + str(pid) + '/status') as f:
+        status = f.read()
+    tracer = next((line.split(':', 1)[1].strip() for line in status.splitlines() if line.startswith('TracerPid:')), '')
+    if tracer == str(observer.pid):
+        attached = True
+        break
+    if observer.poll() is not None:
+        break
+    time.sleep(0.05)
+if not attached:
+    observer.terminate()
+    raise RuntimeError('process observation unavailable; agent was not released')
+with open('/var/lib/sim-input/command.json', 'x') as f:
+    json.dump({k: data[k] for k in ('vendor', 'args', 'environment')}, f)
+subprocess.run(runtime + ['cp', '/var/lib/sim-input/command.json', task + ':/run/sim-command.json'], check=True, stdout=subprocess.DEVNULL)
+connection = subprocess.Popen(runtime + ['attach', '--logs', '--sig-proxy=false', task], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+os.set_blocking(connection.stdout.fileno(), False)
+selector = selectors.DefaultSelector()
+selector.register(connection.stdout, selectors.EVENT_READ)
+offsets, emitted = {}, 0
+stopping = threading.Event()
+def watchdog():
+    while not stopping.wait(0.25):
+        total = sum(os.stat(p).st_size for p in glob.glob(audit + '/trace*'))
+        if total > data['maxLogBytes']:
+            # Killing PID 1 of the container also kills its PID-namespace peers.
+            try:
+                os.kill(pid, 9)
+            except ProcessLookupError:
+                pass
+            break
+threading.Thread(target=watchdog, daemon=True).start()
+def emit(stream, content):
+    global emitted
+    emitted += len(content)
+    if emitted > data['maxLogBytes']:
+        raise RuntimeError('audit budget exceeded')
+    print(json.dumps({'stream': stream, 'data': base64.b64encode(content).decode('ascii')}, separators=(',', ':')), flush=True)
+def traces():
+    for path in sorted(glob.glob(audit + '/trace*')):
+        size = os.stat(path).st_size
+        start = offsets.get(path, 0)
+        if size > start:
+            with open(path, 'rb') as f:
+                f.seek(start)
+                chunk = f.read(16384)
+            offsets[path] = start + len(chunk)
+            emit('trace', chunk)
+try:
+    while connection.poll() is None:
+        for _, _ in selector.select(timeout=0.1):
+            chunk = connection.stdout.read(16384)
+            if chunk:
+                emit('stdout', chunk)
+        traces()
+        for path in sorted(glob.glob('/var/lib/sim-input/queue/*')):
+            with open(path, 'rb') as f:
+                value = f.read(32768)
+            emit('stdin', value)
+            connection.stdin.write(value)
+            connection.stdin.flush()
+            os.unlink(path)
+        if observer.poll() is not None and connection.poll() is None:
+            # A naturally exited container also terminates its tracer.
+            state = subprocess.check_output(runtime + ['inspect', '--format', '{{.State.Running}}', task], text=True).strip()
+            if state == 'true':
+                raise RuntimeError('process observer stopped')
+    remaining = connection.stdout.read()
+    if remaining:
+        emit('stdout', remaining)
+    for _ in range(100):
+        before = sum(offsets.values())
+        traces()
+        if sum(offsets.values()) == before:
+            break
+except Exception:
+    subprocess.run(runtime + ['kill', task], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    raise
+finally:
+    stopping.set()
+    connection.wait(timeout=10)
+    if observer.poll() is None:
+        observer.terminate()
+    observer.wait(timeout=10)
+    selector.close()
+code = subprocess.check_output(runtime + ['wait', task], text=True).strip()
+sys.exit(int(code) if code.isdigit() and int(code) <= 255 else 1)

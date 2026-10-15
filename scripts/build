@@ -49,6 +49,8 @@ fi
 [ -x "$BIN" ] || { echo "built binary not found: $BIN" >&2; exit 1; }
 install -m 0755 "$BIN" "$OUTPUT/Sim.app/Contents/MacOS/sim"
 install -m 0644 "$ROOT/docs/sim.1" "$OUTPUT/Sim.app/Contents/Resources/man/sim.1"
+mkdir -p "$OUTPUT/Sim.app/Contents/Resources/fleet"
+cp -R "$ROOT/fleet/src" "$ROOT/fleet/bin" "$OUTPUT/Sim.app/Contents/Resources/fleet/"
 
 cat > "$OUTPUT/Sim.app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
