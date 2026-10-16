@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+PROFILE=${1:-sim-notary}
+APPLE_ID=${2:-}
+TEAM_ID=${3:-}
+[ "$(uname -s)" = Darwin ] || { echo 'setup-notary requires macOS' >&2; exit 1; }
+[ -n "$APPLE_ID" ] || { echo 'usage: scripts/setup-notary [PROFILE] APPLE_ID TEAM_ID' >&2; exit 64; }
+[ -n "$TEAM_ID" ] || { echo 'usage: scripts/setup-notary [PROFILE] APPLE_ID TEAM_ID' >&2; exit 64; }
+xcrun notarytool store-credentials "$PROFILE" --apple-id "$APPLE_ID" --team-id "$TEAM_ID"

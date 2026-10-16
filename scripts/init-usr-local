@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+USER_NAME=$(id -un)
+GROUP_NAME=$(id -gn)
+sudo install -d -o root -g staff -m 0750 /usr/local/libexec/sim
+sudo install -d -o "$USER_NAME" -g "$GROUP_NAME" -m 0750 /usr/local/var/agent /usr/local/etc/agent
+printf 'state:  /usr/local/var/agent\nconfig: /usr/local/etc/agent\n'

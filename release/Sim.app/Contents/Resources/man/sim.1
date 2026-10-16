@@ -1,0 +1,174 @@
+.TH SIM 1 "September 2026" "sim 0.2.0" "User Commands"
+.SH NAME
+sim \- signed controller for isolated Claude Code and Codex sandboxes
+.SH SYNOPSIS
+.B sim
+.I command
+.RI [ arguments ]
+.SH DESCRIPTION
+.B sim
+runs coding agents inside mountless Docker Sandboxes while keeping the host repository outside the sim trust boundary. Release builds are Developer ID signed/notarized and fail closed on a broken application seal or identity mismatch.
+.PP
+Version 0.2.0 adds signed, encrypted, hardware-gated staked sandbox images. Stake manifests are signed with an OpenSSH FIDO security key. Image data is AES-256-GCM encrypted with a random key wrapped to a hardware-backed PIV RSA identity.
+.SH DAILY COMMANDS
+.TP
+.B sim claude [ARGS...]
+Open Claude Code in the matching sandbox. Alias command: sim cc.
+.TP
+.B sim codex [ARGS...]
+Open Codex in the matching sandbox. Alias command: sim gpt.
+.SH LIFECYCLE
+.TP
+.B sim create [-r|--repo REPO] -v|--vendor VENDOR [--state clean|local] [--context REPO]... [--cpus N] [--memory SIZE] [--audit full|control]
+Create a mountless sandbox from copied host source.
+.TP
+.B sim create -r|--repo REPO -i|--image IMAGE [-n|--name NAME] [--cpus N] [--memory SIZE] [--audit full|control]
+Restore an exact signed stake selected by generation number, immutable tag, or stake UUID. The ciphertext and full signed parent lineage are verified before PIV unwrap; plaintext is verified before template load. Do not combine --image with --branch, --state, or --context.
+.TP
+.B sim stake [WORKSPACE] -t|--tag TAG
+Freeze/export the workspace template, encrypt it with a random AES-256 key, wrap that key to the configured hardware PIV identity, remove the plaintext stake template, sign the canonical manifest with the configured FIDO key, and commit the local stake record. Tags are immutable per repository. Alias command: sim pew.
+.TP
+.B sim image ls [-r|--repo REPO|--all]
+List local stake records.
+.TP
+.B sim image verify IMAGE [-r|--repo REPO] [--deep]
+Verify signed lineage and ciphertext digest. --deep also performs the YubiKey PIV unwrap/decrypt and verifies plaintext SHA-256.
+.TP
+.B sim up [NAME] [-a|--attach]
+Start the selected sandbox; optionally attach to the primary vendor session.
+.TP
+.B sim down [NAME]
+Stop the sandbox while preserving filesystem state.
+.TP
+.B sim reset [NAME] [--saved TEMPLATE] [-f|--force]
+Archive current guest audit data, destroy mutable sandbox state, and recreate from the workspace local baseline or named saved template. This is a local reset, not a hardware-gated vault restore.
+.TP
+.B sim save [NAME] -n|--name TEMPLATE
+Save an ordinary local Docker Sandbox template. This is not a cryptographic stake.
+.TP
+.B sim rm [NAME] [-f|--force]
+Archive guest audit data and remove the mutable sandbox.
+.TP
+.B sim shell [NAME]
+Open an ordinary interactive shell as the sandbox sim user.
+.SH SELECTION AND INSPECTION
+.TP
+.B sim status [NAME]
+Show workspace metadata, including origin stake/generation when created from an image.
+.TP
+.B sim ls
+List workspaces; * marks the active one.
+.TP
+.B sim use NAME
+Select the active workspace.
+.TP
+.B sim diff [NAME] [-- PATH...]
+Export Git-visible/nonignored result files to host quarantine and print a binary-capable diff against the exact copied baseline.
+.TP
+.B sim review [NAME]
+Show the full candidate diff through the pager.
+.SH HOST GIT BOUNDARY
+.TP
+.B sim git merge [NAME] [--theirs|--mine] [-- PATH...]
+Default: 3-way merge BASE, current host, and current sim result without changing Git refs/history. --theirs takes candidate paths. --mine leaves host files unchanged. Host-changing forms are hardware-authorized.
+.TP
+.B sim git commit [NAME] -m|--message MESSAGE
+Require a clean host working tree, apply the candidate and create one commit. Hardware-authorized.
+.TP
+.B sim git pull [NAME] [SOURCE]
+Reserved in v0.2.0. No hidden overwrite is performed.
+.SH KEYS AND CONFIGURATION
+.TP
+.B sim key identities
+List external-token-backed Keychain/PIV identities. Each row reports certificate SHA-256, vault-ok/incompatible, key type/size, token ID, and subject. Software Keychain identities are omitted.
+.TP
+.B sim config auth-key PATH
+Configure the OpenSSH FIDO security-key credential used for protected manifest signing. Only sk-* public key types are accepted. In release builds the fingerprint must match the value pinned into Sim.app.
+.TP
+.B sim config piv-cert CERT_SHA256
+Configure the hardware PIV certificate used for vault key wrapping/unwrapping. The identity must be external-token-backed and support RSA-OAEP-SHA256.
+.TP
+.B sim config show
+Show nonsecret controller configuration.
+.TP
+.B sim doctor
+Verify the self-trust gate, sbx availability, configured hardware keys, host audit chain, and active-workspace audit prerequisites.
+.TP
+.B sim version
+Print controller identity, pinned signer fingerprint, and sbx version.
+.SH WORKERS
+.TP
+.B sim worker add [WORKSPACE] -v|--vendor VENDOR -n|--name NAME
+Add a worker identity to an existing VM. No controller numeric worker cap is imposed.
+.TP
+.B sim worker ls [WORKSPACE]
+List workers.
+.TP
+.B sim worker rm [WORKSPACE] WORKER
+Remove a non-primary worker record.
+.SH AUDIT
+.TP
+.B sim logs [WORKSPACE] [--worker NAME] [--session ID] [-n|--count COUNT] [-f|--follow]
+Print/follow recorded vendor PTY output.
+.TP
+.B sim audit verify [WORKSPACE]
+Verify the host hash chain and, when a workspace is supplied, the guest audit head.
+.TP
+.B sim audit tail [-n|--count COUNT]
+Print recent host ledger events.
+.TP
+.B sim audit sessions [WORKSPACE] [--worker NAME]
+List guest audit session directories.
+.TP
+.B sim audit transcript [WORKSPACE] [--worker NAME] [--session ID] [-n COUNT] [-f]
+Print/follow a selected PTY transcript.
+.TP
+.B sim audit actions [WORKSPACE] [--worker NAME] [--session ID] [-n COUNT] [--grep TEXT]
+Print raw traced machine actions from a fully audited session.
+.TP
+.B sim audit export [WORKSPACE] -o|--output DIR
+Copy guest audit evidence to DIR.
+.SH NETWORK
+.TP
+.B sim net allow [NAME] DESTINATION
+Add sandbox-scoped outbound access after hardware authorization.
+.TP
+.B sim net deny [NAME] DESTINATION
+Reduce network capability without physical authorization.
+.TP
+.B sim net log [NAME]
+Show Docker Sandbox network/policy logs.
+.SH FILES
+.TP
+.I /usr/local/bin/sim
+Symlink to the sealed executable inside Sim.app.
+.TP
+.I /usr/local/libexec/sim/Sim.app
+Developer ID signed, hardened, notarized application bundle.
+.TP
+.I /usr/local/var/sim/vault/objects
+Content-addressed encrypted stake objects.
+.TP
+.I /usr/local/var/sim/vault/manifests
+Canonical signed stake manifests.
+.TP
+.I /usr/local/var/sim/vault/signatures
+OpenSSH FIDO signatures for stake manifests.
+.TP
+.I /usr/local/var/sim/vault/index.json
+Untrusted convenience cache. It is not a root of trust.
+.TP
+.I /usr/local/etc/sim/config.json
+Nonsecret controller configuration: signer path, PIV certificate fingerprint, code root.
+.SH REMOTE STORAGE
+The intended provider set is GCP, Cloudflare R2, Backblaze B2, and Dropbox. Version 0.2.0 does not yet upload or fetch cloud replicas and does not introduce long-lived cloud bearer credentials. Remote providers are intended to store ciphertext and signed metadata only.
+.SH SECURITY
+There is no runtime --insecure or --skip-signature switch. Software SSH signing keys and software PIV identities are rejected for the hardware-rooted paths. Full audit does not decrypt vendor HTTPS.
+.SH EXIT STATUS
+0 indicates success. 1 may indicate unresolved 3-way merge conflicts. 64 indicates command/usage failure. Vendor interactive commands propagate the vendor session exit status.
+.SH SEE ALSO
+.BR sbx (1),
+.BR git (1),
+.BR ssh-keygen (1),
+.BR codesign (1),
+.BR xcrun (1)

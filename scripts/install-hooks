@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+cd "$ROOT"
+git config core.hooksPath .githooks
+echo 'pre-commit hook enabled for this repository'

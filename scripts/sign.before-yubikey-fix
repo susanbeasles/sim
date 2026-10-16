@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ENV_FILE="${AGENT_RELEASE_ENV:-$ROOT/config/release.env}"
+[ -f "$ENV_FILE" ] || { echo "missing $ENV_FILE" >&2; exit 1; }
+# shellcheck disable=SC1090
+source "$ENV_FILE"
+: "${AGENT_SIGNING_IDENTITY:?AGENT_SIGNING_IDENTITY required}"
+APP="$ROOT/release/Sim.app"
+[ -d "$APP" ] || { echo 'run scripts/build first' >&2; exit 1; }
+[ "$(uname -s)" = Darwin ] || { echo 'sign requires macOS' >&2; exit 1; }
+
+security find-identity -v -p codesigning | grep -F "$AGENT_SIGNING_IDENTITY" >/dev/null || {
+  echo "Developer ID signing identity not found: $AGENT_SIGNING_IDENTITY" >&2
+  exit 1
+}
+
+codesign --force --options runtime --timestamp --sign "$AGENT_SIGNING_IDENTITY" "$APP"
+codesign --verify --deep --strict --verbose=2 "$APP"
+echo 'sign: PASS'
