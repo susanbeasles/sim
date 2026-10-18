@@ -1,4 +1,7 @@
 import Foundation
+#if os(macOS)
+import Security
+#endif
 
 public enum TrustGate {
     public static func requireValidSelf() throws {
@@ -8,12 +11,31 @@ public enum TrustGate {
             throw AgentError.trustFailure("release build has no pinned Team ID")
         }
 
-        let executable = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().standardizedFileURL
-        guard let app = enclosingApp(for: executable) else {
+        // Bind trust to the running code object, never launcher-controlled argv[0].
+        let flags = SecCSFlags(rawValue: 0)
+        var code: SecCode?
+        guard SecCodeCopySelf(flags, &code) == errSecSuccess, let code else {
+            throw AgentError.trustFailure("cannot identify running agent code")
+        }
+        let req = "anchor apple generic and identifier \"\(BuildIdentity.bundleIdentifier)\" and certificate leaf[subject.OU] = \"\(BuildIdentity.expectedTeamID)\""
+        var requirement: SecRequirement?
+        guard SecRequirementCreateWithString(req as CFString, flags, &requirement) == errSecSuccess,
+              let requirement,
+              SecCodeCheckValidity(code, flags, requirement) == errSecSuccess else {
+            throw AgentError.trustFailure("running agent signature/identity verification failed")
+        }
+
+        var diskCode: SecStaticCode?
+        var path: CFURL?
+        guard SecCodeCopyStaticCode(code, flags, &diskCode) == errSecSuccess, let diskCode,
+              SecCodeCopyPath(diskCode, flags, &path) == errSecSuccess, let path else {
+            throw AgentError.trustFailure("cannot locate running agent bundle")
+        }
+        let app = (path as URL).resolvingSymlinksInPath().standardizedFileURL
+        guard app.pathExtension == "app" else {
             throw AgentError.trustFailure("agent must execute from its sealed Agent.app bundle")
         }
 
-        let req = "anchor apple generic and identifier \"\(BuildIdentity.bundleIdentifier)\" and certificate leaf[subject.OU] = \"\(BuildIdentity.expectedTeamID)\""
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
         p.arguments = ["--verify", "--deep", "--strict", "--verbose=2", "-R", "=\(req)", app.path]
@@ -26,15 +48,4 @@ public enum TrustGate {
         }
         #endif
     }
-
-    #if os(macOS)
-    private static func enclosingApp(for executable: URL) -> URL? {
-        var cursor = executable.deletingLastPathComponent()
-        while cursor.path != "/" {
-            if cursor.pathExtension == "app" { return cursor }
-            cursor.deleteLastPathComponent()
-        }
-        return nil
-    }
-    #endif
 }
