@@ -210,8 +210,7 @@ struct AgentCLI {
             let p = try SimpleParser.parse(rest, valueOptions: ["-r", "--repo"])
             guard let raw = p.positionals.first else { throw CLIError.usage("usage: agent image verify IMAGE [-r REPO] [--deep]") }
             let repo = try rt.service.resolver.resolve(p.one("-r", "--repo"))
-            let repoName = URL(fileURLWithPath: repo).lastPathComponent
-            let record = try await rt.vault.vaultStore.resolve(repoName: repoName, selector: ImageSelector(raw))
+            let record = try await rt.vault.vaultStore.resolve(repoPath: repo, selector: ImageSelector(raw))
             try await rt.vault.verify(record: record, deep: p.has("--deep"))
             print("verified generation \(record.manifest.generation) \(record.manifest.id.uuidString)")
             return 0

@@ -1,0 +1,3 @@
+# Bind existing stakes to signed repository paths
+
+The existing manifest already signs repoPathHint. Use it as the authorization boundary and namespace rather than the basename, preserving signed bytes and compatibility for stakes at their original canonical path. Compare exact paths; never resolve the signed path through the current filesystem, which could redirect an old path through a symlink. Repository moves require a new stake at the destination; portable stable identifiers and an authorized rebinding workflow are deferred. This prevents name collisions but cannot distinguish a replacement repository at the identical path.
