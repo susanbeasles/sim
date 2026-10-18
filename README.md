@@ -199,6 +199,26 @@ agent diff
 agent review
 ```
 
+Review export is bounded on the host before any guest files are written:
+
+| Resource | Limit |
+| --- | --- |
+| Archive and combined captured stdout/stderr | 64 MiB per command |
+| Regular file | 16 MiB |
+| Candidate or baseline tree | 32 MiB each |
+| Files and directories, including implicit parents | 10,000 per tree |
+| Path depth | 32 components |
+| Captured command or extraction | 120 seconds per stage |
+| Free disk space before export and during extraction | 1 GiB reserve plus 384 MiB working allowance |
+
+Export accepts regular files and directories in uncompressed USTAR with UTF-8 paths.
+Links, special files, sparse archive extensions, unsafe paths, and unsupported archive
+formats are rejected. Sparse regular files are charged by logical size. Candidates
+that exceed these limits must be reduced before review. Failed exports are removed;
+a forced controller termination can leave a bounded export that the next review removes.
+The synthetic review repository uses isolated Git configuration so host filters and
+hooks cannot amplify guest content. Host import and commit retain their normal configuration.
+
 Import all candidate paths:
 
 ```bash
