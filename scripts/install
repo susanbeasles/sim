@@ -2,34 +2,78 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 [ "$#" -le 1 ] || { echo "usage: scripts/install [APP_PATH]" >&2; exit 64; }
+ENV_FILE="${AGENT_RELEASE_ENV:-$ROOT/config/release.env}"
+[ -f "$ENV_FILE" ] || { echo "missing release identity configuration" >&2; exit 1; }
+# Trusted operator configuration, never metadata supplied by the candidate app.
+source "$ENV_FILE"
+: "${AGENT_BUNDLE_ID:?AGENT_BUNDLE_ID required}"
+: "${AGENT_TEAM_ID:?AGENT_TEAM_ID required}"
+[[ "$AGENT_BUNDLE_ID" =~ ^[A-Za-z0-9]+([.-][A-Za-z0-9]+)+$ ]] || exit 1
+[[ "$AGENT_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || exit 1
+[ "$AGENT_TEAM_ID" != YOURTEAMID ] || exit 1
+REQUIREMENT="anchor apple generic and identifier \"$AGENT_BUNDLE_ID\" and certificate leaf[subject.OU] = \"$AGENT_TEAM_ID\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
 APP="${1:-$ROOT/release/Sim.app}"
+[ ! -L "$APP" ] || { echo 'app must not be a symlink' >&2; exit 1; }
 [ -d "$APP" ] || { echo "app bundle missing: $APP" >&2; exit 1; }
 APP="$(cd "$APP" && pwd -P)"
 [ "$(uname -s)" = Darwin ] || { echo 'install requires macOS' >&2; exit 1; }
 [ -d "$APP" ] || { echo 'release/Sim.app missing' >&2; exit 1; }
 
-codesign --verify --deep --strict --verbose=2 "$APP"
-xcrun stapler validate "$APP"
-spctl --assess --type execute --verbose=2 "$APP"
+# The executable (including its embedded signature) and signed resource seal
+# bind the validated code across copies. Strict signature checks validate the
+# resources referenced by that seal; a candidate's version output is not proof.
+digest() {
+  local bundle="$1" part
+  for part in Contents Contents/MacOS Contents/MacOS/sim Contents/_CodeSignature Contents/_CodeSignature/CodeResources; do
+    [ ! -L "$bundle/$part" ] || { echo "symlink in signed bundle: $part" >&2; return 1; }
+  done
+  shasum -a 256 "$bundle/Contents/MacOS/sim" "$bundle/Contents/_CodeSignature/CodeResources" | awk '{print $1}'
+}
+verify() {
+  local bundle="$1"
+  [ "$(digest "$bundle")" = "$DIGEST" ] || { echo 'release artifact changed' >&2; return 1; }
+  codesign --verify --deep --strict --verbose=2 --test-requirement "=$REQUIREMENT" "$bundle" || return 1
+  xcrun stapler validate "$bundle" || return 1
+  spctl --assess --type execute --verbose=2 "$bundle" || return 1
+  [ "$(digest "$bundle")" = "$DIGEST" ] || { echo 'release artifact changed' >&2; return 1; }
+}
+DIGEST="$(digest "$APP")"
+verify "$APP"
 
 BASE=/usr/local/libexec/sim
 DEST="$BASE/Sim.app"
 STAGE="$BASE/.Sim.app.new.$$"
 OLD="$BASE/.Sim.app.old.$$"
 
+# Refuse redirected or user-writable privileged paths before copying code.
+for parent in /usr /usr/local /usr/local/libexec /usr/local/bin "$BASE"; do
+  [ ! -L "$parent" ] || { echo "symlink install path: $parent" >&2; exit 1; }
+  if [ -e "$parent" ]; then
+    [ "$(stat -f %u "$parent")" = 0 ] || { echo "install path must be root-owned: $parent" >&2; exit 1; }
+    mode="$(stat -f %Lp "$parent")"
+    (( (8#$mode & 022) == 0 )) || { echo "writable install path: $parent" >&2; exit 1; }
+  fi
+done
+
 [ -d /usr/local/libexec ] || sudo install -d -o root -g staff -m 0750 /usr/local/libexec
 [ -d /usr/local/bin ] || sudo install -d -o root -g staff -m 0750 /usr/local/bin
 sudo install -d -o root -g staff -m 0750 "$BASE"
 sudo rm -rf "$STAGE" "$OLD"
 sudo ditto "$APP" "$STAGE"
+sudo chown -R root:wheel "$STAGE"
+sudo chmod -R go-w "$STAGE"
 
 # Verify the exact staged bytes before making them live.
-codesign --verify --deep --strict --verbose=2 "$STAGE"
-xcrun stapler validate "$STAGE"
-spctl --assess --type execute --verbose=2 "$STAGE"
+verify "$STAGE"
 
 if [ -e "$DEST" ]; then sudo mv "$DEST" "$OLD"; fi
 sudo mv "$STAGE" "$DEST"
+# Recheck the destination before publishing any command link or running code.
+if ! verify "$DEST"; then
+  sudo rm -rf "$DEST"
+  if [ -e "$OLD" ]; then sudo mv "$OLD" "$DEST"; fi
+  exit 1
+fi
 sudo ln -sfn "$DEST/Contents/MacOS/sim" /usr/local/bin/sim
 if [ -d /usr/local/share/man/man1 ]; then
   sudo ln -sfn "$DEST/Contents/Resources/man/sim.1" /usr/local/share/man/man1/sim.1
