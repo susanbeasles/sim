@@ -223,6 +223,11 @@ Selected paths:
 sim git merge --theirs -- src/a.ts src/b.ts
 ```
 
+Paths must follow `--`. Extra arguments before the delimiter, an empty path
+selection, unknown flags, and conflicting `--mine`/`--theirs` flags are rejected
+before opening the workspace. Omitting the delimiter selects all changed paths.
+Before authorization, imports display the resolved paths and their signed digest.
+
 Create exactly one local commit from a clean host working tree:
 
 ```bash

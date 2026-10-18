@@ -92,6 +92,7 @@ public actor GitBridge {
         if authorize {
             let config = try await store.loadConfiguration()
             let manifest = transactionManifest(operation: "git.merge.theirs", workspace: workspace, patchDigest: patchDigest, hostHead: headBefore, paths: paths.map(\.path))
+            showSelection(paths)
             try AuthorizationGate(runner: runner, configuration: config).authorize(operation: "git merge --theirs", manifest: manifest)
             let headAfterAuthorization = try currentHead(workspace.repoPath)
             let patchAfterAuthorization = try Digest.sha256(file: patchURL)
@@ -124,6 +125,7 @@ public actor GitBridge {
         if authorize {
             let config = try await store.loadConfiguration()
             let manifest = transactionManifest(operation: "git.merge", workspace: workspace, patchDigest: patchDigest, hostHead: headBefore, paths: all.map(\.path))
+            showSelection(all)
             try AuthorizationGate(runner: runner, configuration: config).authorize(operation: "git merge", manifest: manifest)
             let headAfterAuthorization = try currentHead(workspace.repoPath)
             let patchAfterAuthorization = try Digest.sha256(file: patchURL)
@@ -189,6 +191,13 @@ public actor GitBridge {
 
     private func currentHead(_ repo: String) throws -> String {
         try runner.checked("/usr/bin/git", ["-C", repo, "rev-parse", "HEAD"]).stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func showSelection(_ changes: [ChangedPath]) {
+        let paths = changes.map(\.path).sorted()
+        print("Resolved paths (\(paths.count)):")
+        for path in paths { print("  \(path.debugDescription)") }
+        print("pathsSHA256=\(Digest.sha256(paths.joined(separator: "\\n")))")
     }
 
     private func transactionManifest(operation: String, workspace: WorkspaceRecord, patchDigest: String, hostHead: String, paths: [String]) -> String {
