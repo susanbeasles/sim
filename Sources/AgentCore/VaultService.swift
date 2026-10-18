@@ -50,7 +50,6 @@ public actor VaultService {
         let encryptedPart = temp.appendingPathComponent("template.agtvault")
 
         let wasRunning = try workspaceService.sbx.isRunning(name: workspace.sandboxName)
-        try preflightSensitiveFiles(workspace)
         let guestHead = try? workspaceService.sbx.exec(
             name: workspace.sandboxName,
             user: "root",
@@ -67,16 +66,24 @@ public actor VaultService {
             detail: "id=\(stakeID.uuidString) generation=\(generation) tag=\(cleanTag)"
         )
 
+        // Save may create a plaintext template even if export or preflight fails.
+        // Clean it up before the earlier defer resumes the original sandbox.
+        var removedTemplate = false
+        defer {
+            if !removedTemplate { try? workspaceService.sbx.removeTemplate(templateTag) }
+        }
         try workspaceService.sbx.save(name: workspace.sandboxName, tag: templateTag, output: plainTar.path)
+        try workspaceService.sbx.removeTemplate(templateTag)
+        removedTemplate = true
+        let scannedDigest = try TemplateArchive().preflight(plainTar)
         let cryptoResult = try crypto.encrypt(
             plaintext: plainTar,
             ciphertext: encryptedPart,
             recipientCertificateSHA256: piv
         )
-        // `sbx template save` necessarily creates a local plaintext template as
-        // well as the exported tar. Do not leave that as an alternate path around
-        // the YubiKey unwrap ceremony for future `agent create -i ...` restores.
-        try workspaceService.sbx.removeTemplate(templateTag)
+        guard cryptoResult.plaintextSHA256 == scannedDigest else {
+            throw AgentError.trustFailure("encrypted template does not match the inspected export")
+        }
 
         let objectURL = await vaultStore.objectURL(forDigest: cryptoResult.ciphertextSHA256)
         var wroteObject = false
@@ -250,36 +257,6 @@ public actor VaultService {
                 throw AgentError.trustFailure("stake parent manifest digest does not match the signed child link")
             }
             current = parent
-        }
-    }
-
-    private func preflightSensitiveFiles(_ workspace: WorkspaceRecord) throws {
-        let script = #"""
-        set -eu
-        home=$(getent passwd agent | cut -d: -f6)
-        found=0
-        for p in \
-          "$home/.aws/credentials" \
-          "$home/.config/gcloud/application_default_credentials.json" \
-          "$home/.config/rclone/rclone.conf" \
-          "$home/.netrc" \
-          "$home/.npmrc" \
-          "$home/.codex/auth.json" \
-          "$home/.claude/.credentials.json"
-        do
-          if [ -s "$p" ]; then printf '%s\n' "$p"; found=1; fi
-        done
-        if [ -d "$home/.ssh" ]; then
-          find "$home/.ssh" -maxdepth 1 -type f \( -name 'id_*' ! -name '*.pub' \) -size +0c -print 2>/dev/null || true
-        fi
-        """#
-        let result = try workspaceService.sbx.execUnchecked(name: workspace.sandboxName, user: "root", command: ["sh", "-lc", script])
-        guard result.status == 0 else {
-            throw AgentError.unsafe("could not complete secret-file stake preflight: \(result.stderrString)")
-        }
-        let hits = result.stdoutString.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
-        guard hits.isEmpty else {
-            throw AgentError.unsafe("refusing to stake a template containing credential-looking files:\n" + hits.joined(separator: "\n"))
         }
     }
 

@@ -51,5 +51,6 @@ Cloud transport is not implemented in v0.2.0. This is deliberate: the release do
 
 - macOS root can still attack a running local environment; the hardware key primarily protects the signed/remote image lineage and prevents a copied vault from being decrypted without the token.
 - An already-created workspace has a local plaintext baseline template for ordinary reset. `agent create -i ...` is the hardware-gated reconstruction path in v0.2.0.
-- The credential-file preflight cannot recognize every possible secret embedded in arbitrary files.
+- The credential-file preflight inspects the stopped sandbox's exported Docker/OCI image layers on the host, without running guest code or extracting archive paths. Guarded paths and their ancestors must not be links. Credentials retained in earlier layers are rejected even if deleted later. Unrecognized or ambiguous exports fail closed. The inspected export digest must match the bytes consumed by encryption.
+- This finite path guardrail cannot recognize every possible secret embedded in arbitrary files. It adds host temporary storage and scanning cost proportional to the exported image; unsupported archive layouts must be made inspectable before staking.
 - Full audit is strong local observation, not omniscient observation of encrypted remote traffic.

@@ -159,10 +159,12 @@ public struct HardwareVaultCrypto: Sendable {
 
         var index: UInt64 = 0
         var plaintextBytes: UInt64 = 0
+        var plaintextHash = SHA256()
         while true {
             let chunk = try input.read(upToCount: chunkBytes) ?? Data()
             if chunk.isEmpty { break }
             plaintextBytes &+= UInt64(chunk.count)
+            plaintextHash.update(data: chunk)
             let aad = Self.aad(header: header, index: index)
             let sealed = try AES.GCM.seal(chunk, using: symmetric, authenticating: aad)
             guard let combined = sealed.combined else {
@@ -178,7 +180,8 @@ public struct HardwareVaultCrypto: Sendable {
         try output.write(contentsOf: Self.be(UInt32(0)))
         try output.synchronize()
 
-        let plainDigest = try Digest.sha256(file: plaintext)
+        // Bind the digest to the bytes actually encrypted, not a later reopen.
+        let plainDigest = plaintextHash.finalize().map { String(format: "%02x", $0) }.joined()
         let cipherDigest = try Digest.sha256(file: ciphertext)
         let cipherBytes = try Self.fileSize(ciphertext)
         let actualFingerprint = Self.certificateFingerprint(certificate)
