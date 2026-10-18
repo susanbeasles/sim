@@ -183,8 +183,14 @@ public actor GitBridge {
         for c in changes {
             _ = try runner.checked("/usr/bin/git", ["-C", workspace.repoPath, "add", "-A", "--", c.path])
         }
-        _ = try runner.checked("/usr/bin/git", ["-C", workspace.repoPath, "commit", "-m", message])
+        try commit(repo: workspace.repoPath, message: message)
         _ = try await audit.append(workspace: workspace.name, kind: "host.git.commit", detail: message)
+    }
+
+    func commit(repo: String, message: String) throws {
+        // Imported hooks are candidate code, not controller-authorized automation.
+        // Override discovery for this invocation, including post-commit hooks.
+        _ = try runner.checked("/usr/bin/git", ["-c", "core.hooksPath=/dev/null", "-C", repo, "commit", "-m", message])
     }
 
     private func currentHead(_ repo: String) throws -> String {
