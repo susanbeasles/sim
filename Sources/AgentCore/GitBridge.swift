@@ -24,50 +24,53 @@ public actor GitBridge {
         let export = ws.appendingPathComponent("export", isDirectory: true)
         let result = export.appendingPathComponent("result", isDirectory: true)
         let review = export.appendingPathComponent("review", isDirectory: true)
-        let tarHost = export.appendingPathComponent("result.tar")
         let fm = FileManager.default
         if fm.fileExists(atPath: export.path) { try fm.removeItem(at: export) }
-        try fm.createDirectory(at: result, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o750])
-
-        let remoteTar = "/tmp/agent-result-\(UUID().uuidString).tar"
-        let remoteList = "/tmp/agent-files-\(UUID().uuidString).z"
-        let script = "git ls-files -z -c -o --exclude-standard > \(shellQuote(remoteList)) && tar --null --verbatim-files-from -T \(shellQuote(remoteList)) -cf \(shellQuote(remoteTar)) && rm -f \(shellQuote(remoteList))"
-        _ = try sbx.exec(name: workspace.sandboxName, user: "agent", workdir: workspace.targetPath, command: ["sh", "-lc", script])
-        try sbx.copyFrom(sandbox: workspace.sandboxName, sandboxPath: remoteTar, local: tarHost.path)
-        _ = try? sbx.exec(name: workspace.sandboxName, user: "root", command: ["rm", "-f", remoteTar])
-        _ = try runner.checked("/usr/bin/tar", ["-xf", tarHost.path, "-C", result.path])
-        try fm.removeItem(at: tarHost)
+        try fm.createDirectory(at: export, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        var complete = false
+        defer { if !complete { try? fm.removeItem(at: export) } }
+        let budget = ReviewBudget()
+        try budget.checkSpace(at: export)
 
         let baseline = ws.appendingPathComponent("baseline", isDirectory: true).appendingPathComponent(workspace.repoName, isDirectory: true)
+        try budget.validate(tree: baseline)
+        // No guest-controlled archive is ever copied to host disk or passed to tar.
+        // Non-TTY exec preserves the binary stream; ProcessRunner caps it in transit.
+        let script = "git ls-files -z -c -o --exclude-standard | tar --format=ustar --no-recursion --null --verbatim-files-from -T - -cf -"
+        let archive = try sbx.exec(name: workspace.sandboxName, user: "agent", workdir: workspace.targetPath,
+                                   command: ["bash", "-o", "pipefail", "-c", script])
+        try ReviewArchive(budget: budget).extract(archive.stdout, to: result)
+        try budget.checkSpace(at: export)
         try fm.createDirectory(at: review, withIntermediateDirectories: true)
         _ = try runner.checked("/usr/bin/rsync", ["-a", baseline.path + "/", review.path + "/"])
-        _ = try runner.checked("/usr/bin/git", ["-C", review.path, "init", "-q"])
-        _ = try runner.checked("/usr/bin/git", ["-C", review.path, "config", "user.name", "agent-review"])
-        _ = try runner.checked("/usr/bin/git", ["-C", review.path, "config", "user.email", "agent-review@invalid"])
-        _ = try runner.checked("/usr/bin/git", ["-C", review.path, "add", "-A"])
-        _ = try runner.checked("/usr/bin/git", ["-C", review.path, "commit", "-q", "--allow-empty", "-m", "BASELINE"])
-        _ = try runner.checked("/usr/bin/rsync", ["-a", "--delete", "--exclude=.git", result.path + "/", review.path + "/"])
-        _ = try runner.checked("/usr/bin/git", ["-C", review.path, "add", "-A"])
+        _ = try reviewGit(review, ["init", "-q"])
+        _ = try reviewGit(review, ["config", "user.name", "agent-review"])
+        _ = try reviewGit(review, ["config", "user.email", "agent-review@invalid"])
+        _ = try reviewGit(review, ["add", "-A"])
+        _ = try reviewGit(review, ["commit", "-q", "--allow-empty", "-m", "BASELINE"])
+        _ = try runner.checked("/usr/bin/rsync", ["-a", "--delete", result.path + "/", review.path + "/"])
+        _ = try reviewGit(review, ["add", "-A"])
 
-        let patch = try runner.capture("/usr/bin/git", ["-C", review.path, "diff", "--cached", "--binary", "--no-ext-diff"])
+        let patch = try reviewGit(review, ["diff", "--cached", "--binary", "--no-ext-diff"])
         let patchURL = export.appendingPathComponent("candidate.patch")
         try patch.stdout.write(to: patchURL)
         _ = try await audit.append(workspace: workspace.name, kind: "review.export", detail: "patchSHA256=\(try Digest.sha256(file: patchURL))", payload: patch.stdout)
+        complete = true
         return patchURL
     }
 
     public func diff(_ workspace: WorkspaceRecord, paths: [String] = []) async throws -> String {
         _ = try await prepareReview(workspace)
         let review = store.paths.workspace(workspace.name).appendingPathComponent("export/review")
-        var args = ["-C", review.path, "diff", "--cached", "--binary", "--no-ext-diff"]
+        var args = ["diff", "--cached", "--binary", "--no-ext-diff"]
         if !paths.isEmpty { args += ["--"] + paths }
-        return try runner.capture("/usr/bin/git", args).stdoutString
+        return try reviewGit(review, args).stdoutString
     }
 
     public func changedPaths(_ workspace: WorkspaceRecord) async throws -> [ChangedPath] {
         let review = store.paths.workspace(workspace.name).appendingPathComponent("export/review")
         if !FileManager.default.fileExists(atPath: review.path) { _ = try await prepareReview(workspace) }
-        let raw = try runner.checked("/usr/bin/git", ["-C", review.path, "diff", "--cached", "--name-status", "-z", "--no-renames"]).stdout
+        let raw = try reviewGit(review, ["diff", "--cached", "--name-status", "-z", "--no-renames"]).stdout
         let fields = raw.split(separator: 0)
         var out: [ChangedPath] = []
         var i = 0
@@ -185,6 +188,19 @@ public actor GitBridge {
         }
         _ = try runner.checked("/usr/bin/git", ["-C", workspace.repoPath, "commit", "-m", message])
         _ = try await audit.append(workspace: workspace.name, kind: "host.git.commit", detail: message)
+    }
+
+    // Synthetic review repositories must not run host filters or hooks: these
+    // can amplify even a bounded candidate. Host import/commit keeps its normal config.
+    private func reviewGit(_ review: URL, _ arguments: [String]) throws -> ProcessResult {
+        // Candidate files are copied only into the worktree. Keep controller
+        // metadata in a sibling directory and never discover it through .git.
+        let metadata = review.deletingLastPathComponent().appendingPathComponent("review.git")
+        var environment = ProcessInfo.processInfo.environment.filter { !$0.key.hasPrefix("GIT_") }
+        environment["GIT_CONFIG_NOSYSTEM"] = "1"
+        environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
+        environment["GIT_ATTR_NOSYSTEM"] = "1"
+        return try runner.checked("/usr/bin/git", ["-C", review.path, "--git-dir=" + metadata.path, "--work-tree=" + review.path, "-c", "core.hooksPath=/dev/null", "-c", "init.templateDir=", "-c", "core.attributesFile=/dev/null"] + arguments, environment: environment)
     }
 
     private func currentHead(_ repo: String) throws -> String {
