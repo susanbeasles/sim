@@ -67,16 +67,15 @@ public actor VaultService {
             detail: "id=\(stakeID.uuidString) generation=\(generation) tag=\(cleanTag)"
         )
 
-        try workspaceService.sbx.save(name: workspace.sandboxName, tag: templateTag, output: plainTar.path)
-        let cryptoResult = try crypto.encrypt(
-            plaintext: plainTar,
-            ciphertext: encryptedPart,
-            recipientCertificateSHA256: piv
-        )
-        // `sbx template save` necessarily creates a local plaintext template as
-        // well as the exported tar. Do not leave that as an alternate path around
-        // the YubiKey unwrap ceremony for future `agent create -i ...` restores.
-        try workspaceService.sbx.removeTemplate(templateTag)
+        let cryptoResult = try workspaceService.sbx.withTemplate(
+            name: workspace.sandboxName, tag: templateTag, output: plainTar.path
+        ) {
+            try crypto.encrypt(
+                plaintext: plainTar,
+                ciphertext: encryptedPart,
+                recipientCertificateSHA256: piv
+            )
+        }
 
         let objectURL = await vaultStore.objectURL(forDigest: cryptoResult.ciphertextSHA256)
         var wroteObject = false
