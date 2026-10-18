@@ -30,8 +30,8 @@ public actor VaultService {
         let auth = AuthorizationGate(runner: runner, configuration: configuration)
         _ = try auth.configuredFingerprint()
 
-        let generation = try await vaultStore.nextGeneration(repoName: workspace.repoName)
-        let parent = try await vaultStore.latest(repoName: workspace.repoName)
+        let generation = try await vaultStore.nextGeneration(repoPath: workspace.repoPath)
+        let parent = try await vaultStore.latest(repoPath: workspace.repoPath)
         if let parent {
             try await verifyLineage(record: parent, auth: auth)
             guard generation == parent.manifest.generation + 1 else {
@@ -153,11 +153,13 @@ public actor VaultService {
         makeActive: Bool = true
     ) async throws -> WorkspaceRecord {
         let repo = try workspaceService.resolver.resolve(repoInput)
-        let repoName = URL(fileURLWithPath: repo).lastPathComponent
-        let record = try await vaultStore.resolve(repoName: repoName, selector: selector)
+        let record = try await vaultStore.resolve(repoPath: repo, selector: selector)
         let config = try await workspaceService.store.loadConfiguration()
         let auth = AuthorizationGate(runner: runner, configuration: config)
         try await verifyLineage(record: record, auth: auth)
+        guard record.manifest.repoPathHint == repo else {
+            throw AgentError.unsafe("staked image belongs to a different repository path")
+        }
 
         let objectURL = await vaultStore.objectURL(for: record.manifest)
         guard FileManager.default.fileExists(atPath: objectURL.path) else {
@@ -240,7 +242,7 @@ public actor VaultService {
                 throw AgentError.trustFailure("generation \(current.manifest.generation) is missing its signed parent link")
             }
             let parent = try await vaultStore.record(id: parentID)
-            guard parent.manifest.repoName == current.manifest.repoName else {
+            guard parent.manifest.repoPathHint == current.manifest.repoPathHint else {
                 throw AgentError.trustFailure("stake lineage crosses repositories")
             }
             guard parent.manifest.generation + 1 == current.manifest.generation else {

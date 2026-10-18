@@ -23,7 +23,7 @@ The PIV private key must be represented by macOS as an external token-backed key
 
 Image encryption is chunked AES-256-GCM. The ciphertext digest is checked before any private-key operation. After unwrap/decryption, the plaintext template digest is checked before `sbx template load`.
 
-The manifest also signs the parent stake ID and parent manifest digest. Restore verifies every signature and every contiguous parent link back to a parentless generation 0. Tags are immutable per repository.
+The manifest also signs the parent stake ID and parent manifest digest. Restore verifies every signature and every contiguous parent link back to a parentless generation 0. Tags are immutable per repository. Stake selection, generation allocation, parent lineage, and restored workspace binding use the exact canonical host Git root stored in the signed `repoPathHint`, not the directory basename. Restore verifies that binding before PIV unwrap and checks it again before workspace creation. Existing stakes remain valid at their original path; moving a repository requires creating a new stake at its destination. Paths are not portable repository identities and cannot distinguish a replacement repository at the same path.
 
 The local `index.json` is explicitly untrusted cache metadata. Resolution is rebuilt from manifest/signature files.
 

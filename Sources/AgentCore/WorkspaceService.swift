@@ -126,8 +126,8 @@ public actor WorkspaceService {
         let manifest = stake.manifest
         let repo = try resolver.resolve(repoInput ?? manifest.repoName)
         let repoName = URL(fileURLWithPath: repo).lastPathComponent
-        guard repoName == manifest.repoName else {
-            throw AgentError.unsafe("staked image is for repo \(manifest.repoName), not \(repoName)")
+        guard repo == manifest.repoPathHint else {
+            throw AgentError.unsafe("staked image belongs to a different repository path")
         }
         let name = sanitizeName(explicitName ?? "\(repoName)-\(manifest.vendor.rawValue)-i\(manifest.generation)")
         if (try await store.list()).contains(where: { $0.name == name }) {
