@@ -56,6 +56,31 @@ public struct SBXClient: Sendable {
         _ = try runner.checked(executable, ["template", "load", file])
     }
 
+    // Save can register the plaintext template before export itself fails.
+    // Resolve cleanup before returning either the value or the original error.
+    func withTemplate<T>(name: String, tag: String, output: String, body: () throws -> T) throws -> T {
+        let result = Result {
+            try save(name: name, tag: tag, output: output)
+            return try body()
+        }
+        do {
+            try removeTemplate(tag)
+            guard try !templateExists(tag) else {
+                throw AgentError.trustFailure("template remains registered")
+            }
+        } catch {
+            let operation: String
+            switch result {
+            case .success: operation = "export and encryption succeeded"
+            case .failure(let cause): operation = String(describing: cause)
+            }
+            throw AgentError.trustFailure(
+                "plaintext template cleanup could not be verified for \(tag); remove it with 'sbx template rm --force \(tag)' and verify absence before retrying. Cleanup: \(error). Operation: \(operation)"
+            )
+        }
+        return try result.get()
+    }
+
     public func removeTemplate(_ tag: String) throws {
         _ = try runner.checked(executable, ["template", "rm", "--force", tag])
     }
