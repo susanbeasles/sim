@@ -55,7 +55,8 @@ async function verifyImportTree(repo,paths,expected,maxBytes){
 export async function importPreflight(repo,baseline,candidate,maxBytes){
  // Attributes can introduce conversions during apply. Refuse attribute-file
  // transactions, and check active host/info attributes on every relevant path.
- requireThat(![...baseline.files,...candidate.files].some(file=>file.path.split('/').at(-1).toLowerCase()==='.gitattributes'),'remote import refuses attribute-file transactions');
+ const attributes = files=>files.filter(file=>file.path.split('/').at(-1).toLowerCase()==='.gitattributes');
+ requireThat(sameFiles(attributes(baseline.files),attributes(candidate.files)),'remote import refuses attribute-file transactions');
  const paths=importPaths(baseline,candidate);
  if(paths.length){const attrs=(await hostGit(repo,['check-attr','-z','--stdin','filter','ident','text','eol','crlf','working-tree-encoding'],{input:paths.join('\0')+'\0',maxBytes})).stdout.split('\0');
   requireThat(attrs.pop()===''&&attrs.length%3===0,'malformed host attribute response');

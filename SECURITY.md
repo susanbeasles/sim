@@ -54,3 +54,16 @@ Cloud transport is not implemented in v0.2.0. This is deliberate: the release do
 - The credential-file preflight inspects the stopped sandbox's exported Docker/OCI image layers on the host, without running guest code or extracting archive paths. Guarded paths and their ancestors must not be links. Credentials retained in earlier layers are rejected even if deleted later. Unrecognized or ambiguous exports fail closed. The inspected export digest must match the bytes consumed by encryption.
 - This finite path guardrail cannot recognize every possible secret embedded in arbitrary files. It adds host temporary storage and scanning cost proportional to the exported image; unsupported archive layouts must be made inspectable before staking.
 - Full audit is strong local observation, not omniscient observation of encrypted remote traffic.
+
+Stake export now requires the temporary directory to be on an already provisioned,
+dedicated filesystem with an enforced capacity of at most 8 GiB, separate from
+system and SIM state storage, with at least 1 GiB available at admission. Unknown
+or larger filesystems fail closed before stopping the guest or saving a template.
+This deliberately refuses the usual shared system temporary directory. The
+controller does not provision or resize volumes. The free-space check is not a
+reservation; export and inspection can exhaust this dedicated volume. Native
+qualification must verify capacity enforcement (including APFS shared-pool
+behavior). The bound applies to the specified export destination, not SBX's
+internal template registration or staging storage, whose resource behavior still
+requires native verification. Completed exports must be regular, nonsymlink files
+within the same 8 GiB archive ceiling before inspection.

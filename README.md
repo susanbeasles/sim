@@ -329,3 +329,13 @@ agent root inside rootless Podman containers. It includes planning for 200
 agents, encrypted evidence/results and a separate model/package gateway.
 Read its qualification requirements before deployment; real cloud capacity and
 hardware-token operation are not established by the local test suite.
+
+Installer identity configuration is fixed at `config/release.env` beside the
+trusted installer distribution. Environment-selected configuration is ignored.
+The file and every ancestor must be root-owned, without group/other write access,
+symlinks or extended ACLs. A normal user-owned checkout is therefore not an
+installation source; use a separately provisioned protected distribution.
+
+Staking requires an already provisioned dedicated bounded temporary filesystem;
+see `SECURITY.md` for its capacity checks and outstanding native qualification.
+The controller does not provision volumes or change system configuration.

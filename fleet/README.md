@@ -222,7 +222,7 @@ decryption invokes the local PIV operation. Import requires a clean host tree an
 index, displays and signs the exact patch transaction, then applies a full-index binary
 patch against an exact baseline. It verifies both raw files and indexed objects
 against the authorized candidate. Automatic three-way merging is unsupported;
-no automatic commit or push occurs. Attribute-file transactions and active
+no automatic commit or push occurs. Changes to attribute files and active
 working-tree conversions (including ident, EOL and encoding) are rejected before
 mutation. Binary patch transport preserves arbitrary non-UTF-8 file content. Remote import ignores global/system Git configuration and refuses local
 Git filter configuration (including included configuration) before each host Git

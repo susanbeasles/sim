@@ -25,6 +25,12 @@ fi
 [ "$#" -gt 0 ] || { echo "agent guest supervisor: command required" >&2; exit 64; }
 
 AUDIT_ROOT=/var/lib/agent-audit
+[ ! -L "$AUDIT_ROOT" ] || { echo "symlink audit root" >&2; exit 2; }
+mkdir -p "$AUDIT_ROOT"
+# Lock the directory read-only: never follow or truncate a guest-selected lock file.
+exec 9<"$AUDIT_ROOT"
+flock -n 9 || { echo "overlapping audit session" >&2; exit 2; }
+[ -z "$(find "$AUDIT_ROOT" -type l -print)" ] || { echo "symlink in audit ledger" >&2; exit 2; }
 DIR="$AUDIT_ROOT/sessions/$WORKER/$SESSION_ID"
 mkdir -p "$AUDIT_ROOT/sessions/$WORKER"
 mkdir "$DIR"
@@ -35,8 +41,6 @@ REL="sessions/$WORKER/$SESSION_ID"
 # evidence that verification rejects; it is never silently repaired or removed.
 record() {
   local PHASE=$1 INPUT=$2 MANIFEST=$3 DIGEST=$4
-  exec 9>"$AUDIT_ROOT/chain.lock"
-  flock 9
   PREV=$(if [ -e "$AUDIT_ROOT/HEAD" ]; then cat "$AUDIT_ROOT/HEAD"; else printf '%064d' 0; fi)
   SEQ=$(if [ -e "$AUDIT_ROOT/sequence" ]; then cat "$AUDIT_ROOT/sequence"; else echo 0; fi)
   [[ "$PREV" =~ ^[0-9a-f]{64}$ && "$SEQ" =~ ^(0|[1-9][0-9]*)$ ]] || { echo "malformed audit head" >&2; exit 2; }
@@ -58,8 +62,6 @@ record() {
   printf '%s\n' "$HEAD" > "$AUDIT_ROOT/HEAD"
   printf '%s\n' "$SEQ" > "$AUDIT_ROOT/sequence"
   sync
-  flock -u 9
-  exec 9>&-
 }
 
 printf '%s\n' "$(date -u +%FT%TZ)" > "$DIR/start"
@@ -123,10 +125,10 @@ if command -v script >/dev/null 2>&1; then
     --log-in "$DIR/pty.in" \
     --log-out "$DIR/pty.out" \
     --log-timing "$DIR/pty.timing" \
-    -c "$TRACE_CMD"
+    -c "$TRACE_CMD" 9<&-
   RC=$?
 else
-  bash -lc "$TRACE_CMD"
+  bash -lc "$TRACE_CMD" 9<&-
   RC=$?
 fi
 set -e
@@ -168,10 +170,12 @@ elif [ "$#" -gt 0 ]; then
   PRIOR_HEAD=$5
   [[ "$PRIOR_SEQ" =~ ^(0|[1-9][0-9]*)$ && "$PRIOR_HEAD" =~ ^[0-9a-f]{64}$ ]] || fail "invalid prior head"
 fi
-[ -d "$ROOT" ] || fail "no audit ledger"
-exec 9>"$ROOT/chain.lock"
-flock 9
+[ -d "$ROOT" ] && [ ! -L "$ROOT" ] || fail "no safe audit ledger"
+exec 9<"$ROOT"
+flock -n 9 || fail "audit session is active"
+[ -z "$(find "$ROOT" -type l -print)" ] || fail "symlink in audit ledger"
 shopt -s nullglob dotglob
+ACTIVE=""
 STARTED=$'\n'
 COMPLETED=$'\n'
 PREV="$ZERO"
@@ -206,6 +210,8 @@ if [ -f "$ROOT/chain.log" ]; then
     case "$COMPLETED" in *$'\n'"$REL"$'\n'*) fail "duplicate completed session: $REL";; esac
     case "$PHASE" in
       start)
+        [ -z "$ACTIVE" ] || fail "overlapping audit sessions"
+        ACTIVE="$REL"
         case "$STARTED" in *$'\n'"$REL"$'\n'*) fail "duplicate started session: $REL";; esac
         STARTED+="$REL"$'\n'
         INPUT=start.input; MANIFEST=start.manifest.sha256; DIGEST=start.HEAD
@@ -215,6 +221,12 @@ if [ -f "$ROOT/chain.log" ]; then
         fi
         ;;
       complete|"")
+        if [ "$PHASE" = complete ]; then
+          [ "$ACTIVE" = "$REL" ] || fail "out-of-order session completion"
+          ACTIVE=""
+        else
+          [ -z "$ACTIVE" ] || fail "legacy completion overlaps active session"
+        fi
         case "$STARTED" in
           *$'\n'"$REL"$'\n'*) [ "$PHASE" = complete ] || fail "legacy completion of new session";;
           *) [ -z "$PHASE" ] || fail "completion without start: $REL";;
@@ -243,6 +255,8 @@ if [ -f "$ROOT/chain.log" ]; then
   done < "$ROOT/chain.log"
 fi
 
+[ -z "$ACTIVE" ] || fail "incomplete active session"
+
 # Reverse enumeration makes interrupted and unreferenced sessions visible even
 # when chain.log still contains a valid older prefix. Never write in a session.
 [ -d "$ROOT/sessions" ] || { [ "$EXPECTED_SEQ" = 1 ] || fail "missing sessions"; }
@@ -250,6 +264,8 @@ LINKS=$(find "$ROOT" -type l -print)
 [ -z "$LINKS" ] || fail "symlink in audit ledger"
 for WORKER_DIR in "$ROOT"/sessions/*; do
   [ -d "$WORKER_DIR" ] || fail "invalid worker directory"
+  SESSIONS=("$WORKER_DIR"/*)
+  [ "${#SESSIONS[@]}" -gt 0 ] || fail "empty worker directory"
   for DIR in "$WORKER_DIR"/*; do
     [ -d "$DIR" ] || fail "invalid session directory"
     REL=${DIR#"$ROOT/"}

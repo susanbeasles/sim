@@ -69,6 +69,7 @@ private final class StakeRunner: ProcessRunning, @unchecked Sendable {
     init(archive: URL) { self.archive = archive }
     var template: String?
     var saved = false
+    var stopped = false
     func capture(_ executable: String, _ args: [String], environment: [String: String]?) throws -> ProcessResult {
         var output = ""
         if executable == "/usr/bin/ssh-keygen" {
@@ -84,7 +85,9 @@ private final class StakeRunner: ProcessRunning, @unchecked Sendable {
             template = nil
         } else if args == ["template", "ls", "--quiet"] {
             output = template ?? ""
-        } else if args.first != "exec" && args != ["stop", "demo"] {
+        } else if args == ["stop", "demo"] {
+            stopped = true
+        } else if args.first != "exec" {
             XCTFail("unexpected stake command: \(args)")
         }
         return ProcessResult(status: 0, stdout: Data(output.utf8), stderr: Data())
@@ -93,7 +96,8 @@ private final class StakeRunner: ProcessRunning, @unchecked Sendable {
 }
 
 extension TemplateCleanupTests {
-    func testStakeRemovesTemplateWhenPIVIdentityIsUnavailable() async throws {
+    func testStakeAdmissionAndCleanupWhenPIVIdentityIsUnavailable() async throws {
+        for admissionAllowed in [false, true] {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let paths = AgentPaths(stateRoot: root.appendingPathComponent("state"), configRoot: root.appendingPathComponent("config"))
@@ -117,7 +121,13 @@ extension TemplateCleanupTests {
         try await workspaceService.store.saveConfiguration(AgentConfiguration(
             authorizationKey: pub.path, pivCertificateSHA256: "unavailable-test-certificate"
         ))
-        let vault = try VaultService(paths: paths, workspaceService: workspaceService, runner: runner)
+        // Admission metadata is doubled; this does not qualify a real bounded volume.
+        let budget = TemplateExportBudget(attributes: { url in
+            [.systemSize: NSNumber(value: admissionAllowed ? TemplateExportBudget.maximumBytes : TemplateExportBudget.maximumBytes + 1),
+             .systemFreeSize: NSNumber(value: TemplateExportBudget.minimumFreeBytes),
+             .systemNumber: NSNumber(value: url.lastPathComponent.hasPrefix("agent-stake-") ? 2 : 1)]
+        })
+        let vault = try VaultService(paths: paths, workspaceService: workspaceService, runner: runner, exportBudget: budget)
         let workspace = WorkspaceRecord(
             name: "demo", sandboxName: "demo", repoPath: "/tmp/demo", repoName: "demo",
             vendor: .codex, branch: "main", sourceState: .clean, sandboxHome: "/home/agent",
@@ -128,9 +138,16 @@ extension TemplateCleanupTests {
             XCTFail("missing PIV identity must fail")
         } catch {
             let message = String(describing: error)
-            XCTAssertTrue(message.contains("PIV") || message.contains("Keychain") || message.contains("hardware vault encryption"), message)
-            XCTAssertTrue(runner.saved, "must reach the post-save failure path")
+            if admissionAllowed {
+                XCTAssertTrue(message.contains("PIV") || message.contains("Keychain") || message.contains("hardware vault encryption"), message)
+                XCTAssertTrue(runner.saved, "must reach the post-save failure path")
+            } else {
+                XCTAssertTrue(message.contains("dedicated temporary filesystem"), message)
+                XCTAssertFalse(runner.saved, "unsafe destination must fail before export")
+                XCTAssertFalse(runner.stopped, "unsafe destination must fail before stopping guest")
+            }
             XCTAssertNil(runner.template, "failed stake must leave no plaintext template")
+        }
         }
     }
 }

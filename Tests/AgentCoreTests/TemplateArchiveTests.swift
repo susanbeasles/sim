@@ -193,9 +193,14 @@ final class TemplateArchiveTests: XCTestCase {
         let paths = AgentPaths(stateRoot: root.appendingPathComponent("state"), configRoot: root.appendingPathComponent("config"))
         let workspace = try WorkspaceService(paths: paths, runner: runner)
         let pub = root.appendingPathComponent("fixture.pub")
-        try Data("sk-ssh-ed25519@openssh.com fixture\n".utf8).write(to: pub)
+        try Data("sk-ssh-ed25519@openssh.com AAAA\n".utf8).write(to: pub)
         try await workspace.store.saveConfiguration(AgentConfiguration(authorizationKey: pub.path, pivCertificateSHA256: "fixture"))
-        let vault = try VaultService(paths: paths, workspaceService: workspace, runner: runner)
+        let budget = TemplateExportBudget(attributes: { url in
+            [.systemSize: NSNumber(value: TemplateExportBudget.maximumBytes),
+             .systemFreeSize: NSNumber(value: TemplateExportBudget.minimumFreeBytes),
+             .systemNumber: NSNumber(value: url.lastPathComponent.hasPrefix("agent-stake-") ? 2 : 1)]
+        })
+        let vault = try VaultService(paths: paths, workspaceService: workspace, runner: runner, exportBudget: budget)
         let record = WorkspaceRecord(
             name: "demo", sandboxName: "demo", repoPath: "/tmp/demo", repoName: "demo",
             vendor: .codex, branch: "main", sourceState: .clean, sandboxHome: "/home/agent",

@@ -1,13 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 // Platform commands are doubled: this suite must never install or require sudo.
-for (const kind of ['team', 'bundle', 'valid', 'swap', 'seal', 'destination', 'stage', 'installed', 'symlink', 'config', 'acl', 'staging-private', 'umask'] as const) {
-  test(`installer ${['valid', 'staging-private', 'umask'].includes(kind) ? `accepts ${kind}` : `rejects ${kind}`}`, () => {
+for (const kind of ['team', 'bundle', 'valid', 'swap', 'seal', 'destination', 'stage', 'installed', 'symlink', 'config', 'acl', 'staging-private', 'umask', 'release-override', 'writable-config', 'config-link'] as const) {
+  test(`installer ${['valid', 'staging-private', 'umask', 'release-override'].includes(kind) ? `accepts ${kind}` : `rejects ${kind}`}`, () => {
     const dir = mkdtempSync(join(tmpdir(), 'sim-install-'));
     try {
       const bin = join(dir, 'bin');
@@ -16,12 +16,16 @@ for (const kind of ['team', 'bundle', 'valid', 'swap', 'seal', 'destination', 's
       const oldUmask = process.umask(kind === 'umask' ? 0o077 : process.umask());
       for (const path of ['scripts', 'config', 'release/Sim.app/Contents/MacOS', 'release/Sim.app/Contents/_CodeSignature']) mkdirSync(join(root, path), { recursive: true });
       writeFileSync(join(root, 'config/release.env'), kind === 'config' ? 'AGENT_BUNDLE_ID=com.example.sim\n' : 'AGENT_BUNDLE_ID=com.example.sim\nAGENT_TEAM_ID=ABCDEFGHIJ\n');
+      const override = join(dir, 'override.env');
+      writeFileSync(override, 'echo executed > '+join(dir, 'override-executed')+'\nAGENT_BUNDLE_ID=evil.bundle\nAGENT_TEAM_ID=EVILTEAMID\n');
+      if (kind === 'config-link') { rmSync(join(root, 'config/release.env')); symlinkSync(override, join(root, 'config/release.env')); }
       writeFileSync(join(root, 'release/Sim.app/Contents/MacOS/sim'), '#!/bin/bash\nexit 0\n');
       chmodSync(join(root, 'release/Sim.app/Contents/MacOS/sim'), 0o755);
       writeFileSync(join(root, 'release/Sim.app/Contents/_CodeSignature/CodeResources'), 'sealed resources');
       process.umask(oldUmask);
       const source = readFileSync(resolve('scripts/install'), 'utf8')
-        .replaceAll('/usr/local', join(dir, 'local'));
+        .replaceAll('/usr/local', join(dir, 'local'))
+        .replaceAll('/usr/bin/stat', join(bin, 'stat')).replaceAll('/bin/ls', join(bin, 'ls'));
       writeFileSync(join(root, 'scripts/install'), source);
       const command = (name: string, body: string) => {
         const path = join(bin, name);
@@ -62,12 +66,13 @@ case "$cmd" in
 esac
 `);
       command('ls', 'echo directory; if [[ "$KIND" == acl ]]; then echo " 0: user:fixture allow add_file,delete_child"; fi');
-      command('stat', 'if [[ "$2" == %Lp ]]; then echo 755; else echo 0; fi');
+      command('stat', 'if [[ "$2" == %Lp ]]; then if [[ "$KIND" == writable-config && "${@: -1}" == */config/release.env ]]; then echo 666; else echo 755; fi; else echo 0; fi');
       const result = spawnSync('/bin/bash', [join(root, 'scripts/install')], {
-        env: { ...process.env, AGENT_RELEASE_ENV: join(root, "config/release.env"), AGENT_BUNDLE_ID: "", AGENT_TEAM_ID: "", PATH: `${bin}:${process.env.PATH}`, KIND: kind, LOG: join(dir, 'log') }, encoding: 'utf8',
+        env: { ...process.env, AGENT_RELEASE_ENV: kind === "release-override" ? override : join(root, "config/release.env"), AGENT_BUNDLE_ID: "", AGENT_TEAM_ID: "", PATH: `${bin}:${process.env.PATH}`, KIND: kind, LOG: join(dir, 'log') }, encoding: 'utf8',
       });
+      assert.equal(spawnSync('/bin/test', ['-e', join(dir, 'override-executed')]).status, 1, 'untrusted configuration executed');
       const promoted = (() => { try { return readFileSync(join(dir, 'log'), 'utf8').includes('promoted'); } catch { return false; } })();
-      if (['valid', 'staging-private', 'umask'].includes(kind)) { assert.equal(result.status, 0, result.stderr); assert.equal(promoted, true);
+      if (['valid', 'staging-private', 'umask', 'release-override'].includes(kind)) { assert.equal(result.status, 0, result.stderr); assert.equal(promoted, true);
         const events = readFileSync(join(dir, 'log'), 'utf8').trim().split('\n');
         assert.ok(events.indexOf('stripped') >= 0);
         assert.ok(events.indexOf('exposed') > events.indexOf('stripped'));

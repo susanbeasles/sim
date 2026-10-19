@@ -5,6 +5,7 @@ public actor VaultService {
     public nonisolated let vaultStore: VaultStore
     public nonisolated let crypto: HardwareVaultCrypto
     public nonisolated let audit: AuditLedger
+    private let exportBudget: TemplateExportBudget
     public nonisolated let runner: ProcessRunning
 
     public init(
@@ -18,6 +19,17 @@ public actor VaultService {
         self.crypto = crypto
         self.audit = AuditLedger(file: paths.audit.appendingPathComponent("control.jsonl"))
         self.runner = runner
+        self.exportBudget = TemplateExportBudget()
+    }
+
+    // Internal dependency injection keeps filesystem admission independently testable.
+    init(paths: AgentPaths, workspaceService: WorkspaceService, runner: ProcessRunning, exportBudget: TemplateExportBudget) throws {
+        self.workspaceService = workspaceService
+        self.vaultStore = try VaultStore(paths: paths)
+        self.crypto = HardwareVaultCrypto()
+        self.audit = AuditLedger(file: paths.audit.appendingPathComponent("control.jsonl"))
+        self.runner = runner
+        self.exportBudget = exportBudget
     }
 
     public func stake(workspace: WorkspaceRecord, tag: String) async throws -> StakeRecord {
@@ -46,6 +58,7 @@ public actor VaultService {
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent("agent-stake-\(stakeID.uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: temp) }
+        try exportBudget.checkDestination(temp, stateRoot: vaultStore.paths.stateRoot)
         let plainTar = temp.appendingPathComponent("template.tar")
         let encryptedPart = temp.appendingPathComponent("template.agtvault")
 
@@ -69,6 +82,7 @@ public actor VaultService {
         let cryptoResult = try workspaceService.sbx.withTemplate(
             name: workspace.sandboxName, tag: templateTag, output: plainTar.path
         ) {
+            try exportBudget.checkArchive(plainTar)
             let scannedDigest = try TemplateArchive().preflight(plainTar)
             let encrypted = try crypto.encrypt(
                 plaintext: plainTar, ciphertext: encryptedPart,

@@ -74,7 +74,7 @@ test('fleet review binds raw bytes despite candidate EOL attributes',async()=>{
 });
 
 test('real remote import rejects conversions and verifies exact staged and raw candidate bytes',async()=>{
- for(const scenario of ['plain','invalid-utf8','autocrlf','global-filter','local-clean','local-smudge','local-process','info-ident','info-eol','info-crlf','info-encoding','candidate-attributes']){
+ for(const scenario of ['plain','unchanged-attributes','invalid-utf8','autocrlf','global-filter','local-clean','local-smudge','local-process','info-ident','info-eol','info-crlf','info-encoding','candidate-attributes']){
   const root=mkdtempSync(join(tmpdir(),'sim-exact-import-')),oldGlobal=process.env.GIT_CONFIG_GLOBAL;
   try{
    const repo=join(root,'host'),review=join(root,'review'),candidate=join(root,'candidate'),marker=join(root,'filter-ran');
@@ -83,10 +83,12 @@ test('real remote import rejects conversions and verifies exact staged and raw c
    for(const dir of [repo,review])writeFileSync(join(dir,'victim.txt'),before);
    writeFileSync(join(candidate,'victim.txt'),after);
    const git=args=>execFileSync('/usr/bin/git',['-c','core.hooksPath=/dev/null','-c','commit.gpgsign=false','-C',repo,...args],{encoding:'utf8',stdio:['pipe','pipe','pipe']});
+   if(scenario==='unchanged-attributes')for(const dir of [repo,review,candidate])writeFileSync(join(dir,'.gitattributes'),'# no conversions\n');
    git(['init','-q']);git(['add','-A']);git(['-c','user.name=fixture','-c','user.email=fixture@invalid','commit','-qm','baseline']);
    const baseCommit=git(['rev-parse','HEAD']).trim();
    const baseline={schema:1,baseCommit,files:[{path:'victim.txt',mode:420,data:before.toString('base64')}]};
    const next={schema:1,baseCommit,files:[{path:'victim.txt',mode:420,data:after.toString('base64')}]};
+   if(scenario==='unchanged-attributes')for(const tree of [baseline,next])tree.files.push({path:'.gitattributes',mode:420,data:Buffer.from('# no conversions\n').toString('base64')});
    if(scenario==='autocrlf')git(['config','core.autocrlf','true']);
    if(scenario==='global-filter'){
     const config=join(root,'global');writeFileSync(config,'[filter "unsafe"]\n clean = touch '+marker+'; cat\n smudge = touch '+marker+'; cat\n');process.env.GIT_CONFIG_GLOBAL=config;writeFileSync(join(repo,'.git/info/attributes'),'* filter=unsafe\n');
@@ -104,7 +106,7 @@ test('real remote import rejects conversions and verifies exact staged and raw c
     next.files.push({path:'.gitattributes',mode:420,data:data.toString('base64')});
    }
    const patch=await reviewPatch(review,candidate,1048576);
-   if(['plain','invalid-utf8','autocrlf'].includes(scenario)){
+   if(['plain','unchanged-attributes','invalid-utf8','autocrlf'].includes(scenario)){
     await applyRemotePatch(repo,patch,baseline,next,1048576);
     assert.deepEqual(readFileSync(join(repo,'victim.txt')),after,scenario);
     assert.deepEqual(execFileSync('/usr/bin/git',['-C',repo,'show',':victim.txt']),after,scenario);

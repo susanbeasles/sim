@@ -121,7 +121,7 @@ extension VaultStoreTests {
         first.repoPathHint = try resolver.resolve(firstURL.path)
         var second = fixture()
         second.repoPathHint = try resolver.resolve(secondURL.path)
-        _ = try await store.commit(manifest: first, manifestData: store.canonicalManifestData(first), signature: Data("sig".utf8))
+        _ = try await store.commit(manifest: first, manifestData: await store.canonicalManifestData(first), signature: Data("sig".utf8))
         for selector in [ImageSelector.generation(0), .tag(first.tag), .id(first.id)] {
             do {
                 _ = try await store.resolve(repoPath: second.repoPathHint, selector: selector)
@@ -132,7 +132,7 @@ extension VaultStoreTests {
         let headBeforeStake = try await store.latest(repoPath: second.repoPathHint)
         XCTAssertEqual(nextBeforeStake, 0)
         XCTAssertNil(headBeforeStake)
-        _ = try await store.commit(manifest: second, manifestData: store.canonicalManifestData(second), signature: Data("sig".utf8))
+        _ = try await store.commit(manifest: second, manifestData: await store.canonicalManifestData(second), signature: Data("sig".utf8))
         for manifest in [first, second] {
             for selector in [ImageSelector.generation(0), .tag(manifest.tag), .id(manifest.id)] {
                 let record = try await store.resolve(repoPath: manifest.repoPathHint, selector: selector)

@@ -2,9 +2,25 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 [ "$#" -le 1 ] || { echo "usage: scripts/install [APP_PATH]" >&2; exit 64; }
-ENV_FILE="${AGENT_RELEASE_ENV:-$ROOT/config/release.env}"
-[ -f "$ENV_FILE" ] || { echo "missing release identity configuration" >&2; exit 1; }
-# Trusted operator configuration, never metadata supplied by the candidate app.
+# Release identity is provisioned with the trusted installer, never selected by
+# caller environment. Validate the file and every ancestor before sourcing it.
+ENV_FILE="$ROOT/config/release.env"
+[ -f "$ENV_FILE" ] && [ ! -L "$ENV_FILE" ] || { echo "missing or linked release identity configuration" >&2; exit 1; }
+parent="$ENV_FILE"
+while :; do
+  [ ! -L "$parent" ] || { echo "symlink release configuration path" >&2; exit 1; }
+  [ "$(/usr/bin/stat -f %u "$parent")" = 0 ] || { echo "release configuration path must be root-owned" >&2; exit 1; }
+  mode="$(/usr/bin/stat -f %Lp "$parent")"
+  (( (8#$mode & 022) == 0 )) || { echo "writable release configuration path" >&2; exit 1; }
+  acl="$(LC_ALL=C /bin/ls -lde "$parent")"
+  if printf '%s\n' "$acl" | grep -Eq '^[[:space:]]*[0-9]+:'; then
+    echo "extended ACL on release configuration path" >&2; exit 1
+  fi
+  [ "$parent" != / ] || break
+  parent="${parent%/*}"
+  [ -n "$parent" ] || parent=/
+done
+unset AGENT_BUNDLE_ID AGENT_TEAM_ID
 source "$ENV_FILE"
 : "${AGENT_BUNDLE_ID:?AGENT_BUNDLE_ID required}"
 : "${AGENT_TEAM_ID:?AGENT_TEAM_ID required}"
