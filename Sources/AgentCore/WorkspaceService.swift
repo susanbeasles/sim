@@ -126,8 +126,8 @@ public actor WorkspaceService {
         let manifest = stake.manifest
         let repo = try resolver.resolve(repoInput ?? manifest.repoName)
         let repoName = URL(fileURLWithPath: repo).lastPathComponent
-        guard repoName == manifest.repoName else {
-            throw AgentError.unsafe("staked image is for repo \(manifest.repoName), not \(repoName)")
+        guard repo == manifest.repoPathHint else {
+            throw AgentError.unsafe("staked image belongs to a different repository path")
         }
         let name = sanitizeName(explicitName ?? "\(repoName)-\(manifest.vendor.rawValue)-i\(manifest.generation)")
         if (try await store.list()).contains(where: { $0.name == name }) {
@@ -245,16 +245,52 @@ public actor WorkspaceService {
                 throw AgentError.unsafe("full audit requires script + strace + setpriv + unshare + flock + working unprivileged user namespaces; agent refused to launch because the observer/fake-root boundary is not available")
             }
         }
-        _ = try await audit.append(workspace: workspace.name, worker: worker, kind: "session.begin", direction: "host->vm", detail: ([vendor.executable] + args).joined(separator: " "))
-        let code = try sbx.interactiveExec(
-            name: workspace.sandboxName,
-            user: "root",
-            workdir: workspace.targetPath,
-            command: ["/usr/local/libexec/agent-guest/session", worker, vendor.executable] + args
-        )
-        let head = try? sbx.exec(name: workspace.sandboxName, user: "root", command: ["sh", "-lc", "cat /var/lib/agent-audit/HEAD 2>/dev/null || true"]).stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
-        _ = try await audit.append(workspace: workspace.name, worker: worker, kind: "session.end", direction: "vm->host", detail: "exit=\(code) guestAuditHead=\(head ?? "")")
-        return code
+        let session = UUID().uuidString.lowercased()
+        _ = try await audit.append(workspace: workspace.name, worker: worker, kind: "session.begin", direction: "host->vm", detail: "guestSession=\(session) " + ([vendor.executable] + args).joined(separator: " "))
+        do {
+            if workspace.auditLevel == .full {
+                try installGuestHelpers(workspaceName: workspace.sandboxName)
+            }
+            let before = workspace.auditLevel == .full ? try guestAudit(workspace, args: ["--snapshot"]) : nil
+            var command = ["/usr/local/libexec/agent-guest/session", worker]
+            if let before {
+                command += ["--require-full", "--session", session, String(before.sequence), before.head]
+            }
+            let code = try sbx.interactiveExec(
+                name: workspace.sandboxName,
+                user: "root",
+                workdir: workspace.targetPath,
+                command: command + [vendor.executable] + args
+            )
+            let detail: String
+            if let before {
+                let after = try guestAudit(workspace, args: ["--require-full", "--session", worker, session, String(before.sequence), before.head])
+                guard after.sequence == before.sequence + 2, after.head != before.head else {
+                    throw AgentError.unsafe("guest audit did not advance through session start and completion")
+                }
+                detail = "exit=\(code) guestSession=\(session) guestAuditSequence=\(after.sequence) guestAuditHead=\(after.head)"
+            } else {
+                let head = try? sbx.exec(name: workspace.sandboxName, user: "root", command: ["sh", "-lc", "cat /var/lib/agent-audit/HEAD 2>/dev/null || true"]).stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
+                detail = "exit=\(code) guestAuditHead=\(head ?? "")"
+            }
+            _ = try await audit.append(workspace: workspace.name, worker: worker, kind: "session.end", direction: "vm->host", detail: detail)
+            return code
+        } catch {
+            _ = try? await audit.append(workspace: workspace.name, worker: worker, kind: "session.audit.failed", direction: "vm->host", detail: "guestSession=\(session) error=\(error)")
+            throw error
+        }
+    }
+
+    private func guestAudit(_ workspace: WorkspaceRecord, args: [String]) throws -> (sequence: Int, head: String) {
+        let output = try sbx.exec(name: workspace.sandboxName, user: "root", command: ["/usr/local/libexec/agent-guest/audit-verify"] + args).stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fields = output.split(separator: " ", omittingEmptySubsequences: false)
+        guard fields.count == 2,
+              let sequence = Int(fields[0]), sequence >= 0, sequence <= Int.max - 2,
+              String(sequence) == fields[0],
+              fields[1].count == 64, fields[1].allSatisfy({ "0123456789abcdef".contains($0) }) else {
+            throw AgentError.unsafe("guest audit returned a malformed sequence or head")
+        }
+        return (sequence, String(fields[1]))
     }
 
     public func shell(_ workspace: WorkspaceRecord) async throws -> Int32 {
@@ -308,15 +344,24 @@ public actor WorkspaceService {
     }
 
     private func installGuestHelpers(workspaceName: String) throws {
-        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("agent-guest-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        defer { try? FileManager.default.removeItem(at: temp) }
-        let session = temp.appendingPathComponent("session")
-        let verify = temp.appendingPathComponent("audit-verify")
-        try Data(GuestBootstrap.sessionScript.utf8).write(to: session)
-        try Data(GuestBootstrap.verifyScript.utf8).write(to: verify)
-        try sbx.copy(local: temp.path, sandbox: workspaceName, sandboxPath: "/tmp")
-        _ = try sbx.exec(name: workspaceName, user: "root", command: ["sh", "-lc", "install -d -m 0700 /var/lib/agent-audit /usr/local/libexec/agent-guest && install -m 0755 /tmp/\(temp.lastPathComponent)/session /usr/local/libexec/agent-guest/session && install -m 0755 /tmp/\(temp.lastPathComponent)/audit-verify /usr/local/libexec/agent-guest/audit-verify && rm -rf /tmp/\(temp.lastPathComponent)"])
+        let root = "/usr/local/libexec/agent-guest"
+        let suffix = UUID().uuidString.lowercased()
+        let session = "\(root)/session-\(suffix)"
+        let verify = "\(root)/audit-verify-\(suffix)"
+        // Stage in the root-only helper directory, never guest-writable /tmp.
+        // Rename complete scripts into place and retain all existing evidence.
+        let script = """
+        set -eu
+        install -d -m 0700 /var/lib/agent-audit \(root)
+        trap 'rm -f \(session) \(verify)' EXIT
+        umask 077
+        printf '%s' \(shellQuote(GuestBootstrap.sessionScript)) > \(session)
+        printf '%s' \(shellQuote(GuestBootstrap.verifyScript)) > \(verify)
+        chmod 0755 \(session) \(verify)
+        mv -f \(session) \(root)/session
+        mv -f \(verify) \(root)/audit-verify
+        """
+        _ = try sbx.exec(name: workspaceName, user: "root", command: ["sh", "-lc", script])
     }
 
     private func captureSandboxRepoBaseline(sandboxName: String, targetPath: String, destination: URL) throws {

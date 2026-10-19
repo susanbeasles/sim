@@ -93,17 +93,41 @@ public struct AuthorizationGate: Sendable {
         guard FileManager.default.fileExists(atPath: pub) else {
             throw AgentError.authorizationRequired("authorization public key not found: \(pub)")
         }
-        let publicLine = try String(contentsOfFile: pub, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
-        let algorithm = publicLine.split(whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? ""
-        let hardwareAlgorithms: Set<String> = [
-            "sk-ssh-ed25519@openssh.com",
-            "sk-ecdsa-sha2-nistp256@openssh.com",
-        ]
-        guard hardwareAlgorithms.contains(algorithm) else {
-            throw AgentError.authorizationRequired("authorization key must be an OpenSSH FIDO/security-key credential (sk-*); software private keys are not accepted")
-        }
-        let fingerprint = try Self.sshFingerprint(publicKeyPath: pub, runner: runner)
+        try Self.validateIdentity(configuration.authorizationIdentity)
+        let publicLine = try Self.canonicalHardwarePublicKey(String(contentsOfFile: pub, encoding: .utf8))
+        // Fingerprint the exact canonical key later written to allowed_signers,
+        // not a path that could change between parsing and fingerprinting.
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("agent-key-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let snapshot = temp.appendingPathComponent("public")
+        try Data((publicLine + "\n").utf8).write(to: snapshot, options: .atomic)
+        let fingerprint = try Self.sshFingerprint(publicKeyPath: snapshot.path, runner: runner)
         return SigningMaterial(privateOrResidentPath: signer, publicLine: publicLine, fingerprint: fingerprint)
+    }
+
+    static func validateIdentity(_ identity: String) throws {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._@+-")
+        guard !identity.isEmpty, identity.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+            throw AgentError.authorizationRequired("authorization identity must be a single literal principal")
+        }
+    }
+
+    static func canonicalHardwarePublicKey(_ input: String) throws -> String {
+        var line = input
+        if line.hasSuffix("\n") { line.removeLast() }
+        if line.hasSuffix("\r") { line.removeLast() }
+        guard !line.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) && $0.value != 9 }) else {
+            throw AgentError.authorizationRequired("authorization public key must contain exactly one key line")
+        }
+        let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        let hardwareAlgorithms: Set<String> = ["sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com"]
+        guard fields.count >= 2, hardwareAlgorithms.contains(String(fields[0])),
+              let blob = Data(base64Encoded: String(fields[1])), !blob.isEmpty else {
+            throw AgentError.authorizationRequired("authorization key must be one OpenSSH FIDO/security-key credential (sk-*)")
+        }
+        // Comments never enter allowed_signers. ssh-keygen validates the key blob.
+        return "\(fields[0]) \(fields[1])"
     }
 
     private func requirePinnedFingerprint(_ actual: String) throws {
@@ -119,8 +143,10 @@ public struct AuthorizationGate: Sendable {
 
     public static func sshFingerprint(publicKeyPath: String, runner: ProcessRunning = ProcessRunner()) throws -> String {
         let result = try runner.checked("/usr/bin/ssh-keygen", ["-lf", publicKeyPath, "-E", "sha256"])
-        let fields = result.stdoutString.split(whereSeparator: { $0.isWhitespace })
-        guard fields.count >= 2 else { throw AgentError.malformed("could not parse ssh-keygen fingerprint output") }
+        let lines = result.stdoutString.split(whereSeparator: { $0.isNewline })
+        guard lines.count == 1 else { throw AgentError.malformed("expected exactly one ssh-keygen fingerprint") }
+        let fields = lines[0].split(whereSeparator: { $0.isWhitespace })
+        guard fields.count >= 2, fields[1].hasPrefix("SHA256:") else { throw AgentError.malformed("could not parse ssh-keygen fingerprint output") }
         return String(fields[1])
     }
 
