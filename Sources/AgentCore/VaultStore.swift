@@ -26,35 +26,35 @@ public actor VaultStore {
         try encoder.encode(manifest)
     }
 
-    public func nextGeneration(repoName: String) throws -> Int {
-        let records = try loadRecords().filter { $0.manifest.repoName == repoName }
+    public func nextGeneration(repoPath: String) throws -> Int {
+        let records = try loadRecords().filter { $0.manifest.repoPathHint == repoPath }
         return (records.map { $0.manifest.generation }.max() ?? -1) + 1
     }
 
-    public func latest(repoName: String) throws -> StakeRecord? {
+    public func latest(repoPath: String) throws -> StakeRecord? {
         try loadRecords()
-            .filter { $0.manifest.repoName == repoName }
+            .filter { $0.manifest.repoPathHint == repoPath }
             .max { lhs, rhs in lhs.manifest.generation < rhs.manifest.generation }
     }
 
-    public func resolve(repoName: String, selector: ImageSelector) throws -> StakeRecord {
-        let records = try loadRecords().filter { $0.manifest.repoName == repoName }
+    public func resolve(repoPath: String, selector: ImageSelector) throws -> StakeRecord {
+        let records = try loadRecords().filter { $0.manifest.repoPathHint == repoPath }
         let match: StakeRecord?
         switch selector {
         case .generation(let generation):
             let matches = records.filter { $0.manifest.generation == generation }
-            guard matches.count <= 1 else { throw AgentError.trustFailure("multiple manifests claim generation \(generation) for \(repoName)") }
+            guard matches.count <= 1 else { throw AgentError.trustFailure("multiple manifests claim generation \(generation) for \(repoPath)") }
             match = matches.first
         case .tag(let tag):
             let matches = records.filter { $0.manifest.tag == tag }
-            guard matches.count <= 1 else { throw AgentError.trustFailure("multiple signed-image records claim immutable tag '\(tag)' for \(repoName)") }
+            guard matches.count <= 1 else { throw AgentError.trustFailure("multiple signed-image records claim immutable tag '\(tag)' for \(repoPath)") }
             match = matches.first
         case .id(let id):
             let matches = records.filter { $0.manifest.id == id }
             guard matches.count <= 1 else { throw AgentError.trustFailure("multiple manifests claim stake id \(id.uuidString)") }
             match = matches.first
         }
-        guard let match else { throw AgentError.notFound("no staked image for \(repoName) matching \(selectorDescription(selector))") }
+        guard let match else { throw AgentError.notFound("no staked image for \(repoPath) matching \(selectorDescription(selector))") }
         return match
     }
 
@@ -79,10 +79,10 @@ public actor VaultStore {
         guard !existing.contains(where: { $0.manifest.id == manifest.id }) else {
             throw AgentError.unsafe("stake ID already exists: \(manifest.id)")
         }
-        guard !existing.contains(where: { $0.manifest.repoName == manifest.repoName && $0.manifest.generation == manifest.generation }) else {
+        guard !existing.contains(where: { $0.manifest.repoPathHint == manifest.repoPathHint && $0.manifest.generation == manifest.generation }) else {
             throw AgentError.unsafe("generation \(manifest.generation) already exists for \(manifest.repoName)")
         }
-        guard !existing.contains(where: { $0.manifest.repoName == manifest.repoName && $0.manifest.tag == manifest.tag }) else {
+        guard !existing.contains(where: { $0.manifest.repoPathHint == manifest.repoPathHint && $0.manifest.tag == manifest.tag }) else {
             throw AgentError.unsafe("stake tag '\(manifest.tag)' already exists for \(manifest.repoName); tags are immutable names")
         }
 
@@ -189,11 +189,11 @@ public actor VaultStore {
             guard ids.insert(record.manifest.id).inserted else {
                 throw AgentError.trustFailure("duplicate stake id in manifest store: \(record.manifest.id)")
             }
-            let generationKey = "\(record.manifest.repoName)\u{0}\(record.manifest.generation)"
+            let generationKey = "\(record.manifest.repoPathHint)\u{0}\(record.manifest.generation)"
             guard generations.insert(generationKey).inserted else {
                 throw AgentError.trustFailure("duplicate generation \(record.manifest.generation) for \(record.manifest.repoName)")
             }
-            let tagKey = "\(record.manifest.repoName)\u{0}\(record.manifest.tag)"
+            let tagKey = "\(record.manifest.repoPathHint)\u{0}\(record.manifest.tag)"
             guard tags.insert(tagKey).inserted else {
                 throw AgentError.trustFailure("duplicate immutable tag '\(record.manifest.tag)' for \(record.manifest.repoName)")
             }
@@ -217,6 +217,7 @@ public actor VaultStore {
             }
             guard entry.manifestSHA256 == actual.manifestSHA256,
                   entry.manifest.repoName == actual.manifest.repoName,
+                  entry.manifest.repoPathHint == actual.manifest.repoPathHint,
                   entry.manifest.generation == actual.manifest.generation,
                   entry.manifest.tag == actual.manifest.tag,
                   entry.manifestFile == actual.manifestFile,

@@ -23,7 +23,7 @@ The PIV private key must be represented by macOS as an external token-backed key
 
 Image encryption is chunked AES-256-GCM. The ciphertext digest is checked before any private-key operation. After unwrap/decryption, the plaintext template digest is checked before `sbx template load`.
 
-The manifest also signs the parent stake ID and parent manifest digest. Restore verifies every signature and every contiguous parent link back to a parentless generation 0. Tags are immutable per repository.
+The manifest also signs the parent stake ID and parent manifest digest. Restore verifies every signature and every contiguous parent link back to a parentless generation 0. Tags are immutable per repository. Stake selection, generation allocation, parent lineage, and restored workspace binding use the exact canonical host Git root stored in the signed `repoPathHint`, not the directory basename. Restore verifies that binding before PIV unwrap and checks it again before workspace creation. Existing stakes remain valid at their original path only when their entire parent lineage uses that same path. Legacy basename-scoped histories can contain parents from another path; these mixed-path histories fail closed, including when selecting the latest parent for a new stake. Automatic recovery of mixed-path histories is not implemented. Moving a repository requires creating a new stake at its destination. Paths are not portable repository identities and cannot distinguish a replacement repository at the same path.
 
 The local `index.json` is explicitly untrusted cache metadata. Resolution is rebuilt from manifest/signature files.
 
@@ -51,5 +51,19 @@ Cloud transport is not implemented in v0.2.0. This is deliberate: the release do
 
 - macOS root can still attack a running local environment; the hardware key primarily protects the signed/remote image lineage and prevents a copied vault from being decrypted without the token.
 - An already-created workspace has a local plaintext baseline template for ordinary reset. `agent create -i ...` is the hardware-gated reconstruction path in v0.2.0.
-- The credential-file preflight cannot recognize every possible secret embedded in arbitrary files.
+- The credential-file preflight inspects the stopped sandbox's exported Docker/OCI image layers on the host, without running guest code or extracting archive paths. Guarded paths and their ancestors must not be links. Credentials retained in earlier layers are rejected even if deleted later. Unrecognized or ambiguous exports fail closed. The inspected export digest must match the bytes consumed by encryption.
+- This finite path guardrail cannot recognize every possible secret embedded in arbitrary files. It adds host temporary storage and scanning cost proportional to the exported image; unsupported archive layouts must be made inspectable before staking.
 - Full audit is strong local observation, not omniscient observation of encrypted remote traffic.
+
+Stake export now requires the temporary directory to be on an already provisioned,
+dedicated filesystem with an enforced capacity of at most 8 GiB, separate from
+system and SIM state storage, with at least 1 GiB available at admission. Unknown
+or larger filesystems fail closed before stopping the guest or saving a template.
+This deliberately refuses the usual shared system temporary directory. The
+controller does not provision or resize volumes. The free-space check is not a
+reservation; export and inspection can exhaust this dedicated volume. Native
+qualification must verify capacity enforcement (including APFS shared-pool
+behavior). The bound applies to the specified export destination, not SBX's
+internal template registration or staging storage, whose resource behavior still
+requires native verification. Completed exports must be regular, nonsymlink files
+within the same 8 GiB archive ceiling before inspection.

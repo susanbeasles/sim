@@ -1,13 +1,13 @@
 import {readFile,writeFile,mkdir,mkdtemp,rm,cp,readdir} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
-import {randomBytes,randomUUID,X509Certificate,publicEncrypt,constants} from 'node:crypto';
+import {randomBytes,randomUUID,createHash,X509Certificate,publicEncrypt,constants} from 'node:crypto';
 import {canonical,digest,integer,identifier,requireThat} from './canonical.mjs';
 import {validateConfig,requiredHosts,canonicalCost,validateGrant} from './policy.mjs';
 import {APIClient} from './client.mjs';
 import {run} from './process.mjs';
 import {seal,open,wrapKey} from './crypto.mjs';
-import {packDirectory,extractBundle} from './artifacts.mjs';
+import {packDirectory,extractBundle,decodeBundle} from './artifacts.mjs';
 
 const options=['--config','--ca','--connect','--count','--profile','--seconds','--budget-micros','--repo','--vendor','--model','--owner-cert','--grant','--state','--out','--task','--max-requests','--max-output-tokens'];
 export function parseArgs(args,allowed=options){const result={positionals:[],values:{},remainder:[]};for(let i=0;i<args.length;i++){const a=args[i];if(a==='--'){result.remainder=args.slice(i+1);break;}if(a.startsWith('--')){requireThat(allowed.includes(a)&&i+1<args.length&&!Object.hasOwn(result.values,a),'unknown, repeated or missing option: '+a);result.values[a]=args[++i];}else result.positionals.push(a);}return result;}
@@ -24,10 +24,60 @@ export async function* logPages(api,task,{follow=false}={}){
   }while(true);
 }
 export function gitEnvironment(){const env=Object.fromEntries(Object.entries(process.env).filter(([k])=>!k.startsWith('GIT_')));return{...env,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null'};}
+// No import authorization grants permission to execute host Git filter commands.
+// Refuse configured filters, including conditional/includes, before each host call.
+// This intentionally requires a filter-free repository for remote import.
+export async function hostGit(repo,args,options={}){
+ const host=['--literal-pathspecs','-c','core.autocrlf=false','-c','core.eol=lf','--no-optional-locks','-c','core.fsmonitor=false','-c','core.hooksPath=/dev/null','-c','core.attributesFile=/dev/null','-C',repo];
+ const env={...gitEnvironment(),GIT_ATTR_NOSYSTEM:'1'};
+ const names=await run('/usr/bin/git',[...host,'config','--null','--list','--includes','--name-only'],{env});
+ requireThat(!names.stdout.split('\0').some(name=>name.toLowerCase().startsWith('filter.')),'remote import refuses repositories with configured Git filters');
+ return run('/usr/bin/git',[...host,...args],{...options,env});
+}
+function importPaths(baseline,candidate){return [...new Set([...baseline.files,...candidate.files].map(file=>file.path))].sort();}
+function sameFiles(actual,expected){return canonical([...actual].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0))===canonical([...expected].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0));}
+async function verifyImportTree(repo,paths,expected,maxBytes){
+ requireThat((await hostGit(repo,['rev-parse','--verify','HEAD'])).stdout.trim()===expected.baseCommit,'host HEAD differs from the authorized baseline commit');
+ const observed=decodeBundle(packDirectory(repo,paths,expected.baseCommit,maxBytes),maxBytes);
+ requireThat(sameFiles(observed.files,expected.files),'host raw bytes or modes differ from the authorized import tree');
+ const format=(await hostGit(repo,['rev-parse','--show-object-format'])).stdout.trim();
+ requireThat(['sha1','sha256'].includes(format),'unsupported Git object format');
+ const listing=(await hostGit(repo,['ls-files','--stage','-z'],{maxBytes})).stdout;
+ const entries=new Map();for(const record of listing.split('\0').filter(Boolean)){
+  const match=/^([0-7]{6}) ([a-f0-9]+) 0\t([\s\S]+)$/.exec(record);requireThat(match,'host index contains unresolved entries');entries.set(match[3],{mode:match[1],hash:match[2]});
+ }
+ const files=new Map(expected.files.map(file=>[file.path,file]));
+ for(const path of paths){const file=files.get(path),entry=entries.get(path);
+  if(!file){requireThat(!entry,'deleted import path remains indexed');continue;}
+  const bytes=Buffer.from(file.data,'base64'),hash=createHash(format).update(Buffer.from('blob '+bytes.length+'\0')).update(bytes).digest('hex');
+  requireThat(entry&&entry.hash===hash&&entry.mode===(file.mode===493?'100755':'100644'),'host index differs from the authorized import tree');
+ }
+}
+export async function importPreflight(repo,baseline,candidate,maxBytes){
+ requireThat(candidate.baseCommit===baseline.baseCommit,'candidate baseline commit differs from the authorized source');
+ // Attributes can introduce conversions during apply. Refuse attribute-file
+ // transactions, and check active host/info attributes on every relevant path.
+ const attributes = files=>files.filter(file=>file.path.split('/').at(-1).toLowerCase()==='.gitattributes');
+ requireThat(sameFiles(attributes(baseline.files),attributes(candidate.files)),'remote import refuses attribute-file transactions');
+ const paths=importPaths(baseline,candidate);
+ if(paths.length){const attrs=(await hostGit(repo,['check-attr','-z','--stdin','filter','ident','text','eol','crlf','working-tree-encoding'],{input:paths.join('\0')+'\0',maxBytes})).stdout.split('\0');
+  requireThat(attrs.pop()===''&&attrs.length%3===0,'malformed host attribute response');
+  for(let i=0;i<attrs.length;i+=3)requireThat(['unspecified','unset'].includes(attrs[i+2]),'remote import refuses active working-tree conversion attributes');
+ }
+ await verifyImportTree(repo,paths,baseline,maxBytes);
+}
+export async function applyRemotePatch(repo,patch,baseline,candidate,maxBytes){
+ await importPreflight(repo,baseline,candidate,maxBytes);
+ await hostGit(repo,['apply','--check','--index','--binary','-'],{input:patch,maxBytes});
+ // Exact baseline required: never silently substitute a three-way merge result.
+ await hostGit(repo,['apply','--index','--binary','-'],{input:patch,maxBytes});
+ await verifyImportTree(repo,importPaths(baseline,candidate),candidate,maxBytes);
+}
 export async function reviewPatch(review,candidate,maxBytes){
-  const git=['-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-c','commit.gpgsign=false','-C',review];
+  const git=['-c','init.templateDir=','-c','core.attributesFile=/dev/null','-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-c','commit.gpgsign=false','-C',review];
   const call=(args,options={})=>run('/usr/bin/git',[...git,...args],{...options,env:gitEnvironment()});
-  await call(['init','-q']);await call(['add','-f','-A']);await call(['-c','user.name=sim-review','-c','user.email=sim@invalid','commit','-q','--allow-empty','-m','BASELINE']);
+  await call(['init','-q']);await mkdir(join(review,'.git','info'),{recursive:true});
+  await writeFile(join(review,'.git','info','attributes'),'* -text -ident -filter -working-tree-encoding -diff\n');await call(['add','-f','-A']);await call(['-c','user.name=sim-review','-c','user.email=sim@invalid','commit','-q','--allow-empty','-m','BASELINE']);
   for(const name of await readdir(review))if(name!=='.git')await rm(join(review,name),{recursive:true,force:true});
   for(const name of await readdir(candidate))await cp(join(candidate,name),join(review,name),{recursive:true});
   await call(['add','-f','-A']);return(await call(['diff','--cached','--full-index','--binary','--no-ext-diff','--no-textconv'],{maxBytes})).stdout;
@@ -66,15 +116,15 @@ export async function main(args){
         }finally{if(process.stdin.isTTY)process.stdin.setRawMode(false);process.stdin.pause();}return;
       }
       requireThat(info.task.result,'task has no candidate result');const result=JSON.parse(info.task.result);const ciphertext=await api.request('/v1/artifacts/'+result.digest,{rawResponse:true});requireThat(digest(ciphertext)===result.digest,'result digest mismatch');const candidate=open(ciphertext,key,'result/'+taskID);const sourceCipher=Buffer.from(saved.source,'base64');requireThat(digest(sourceCipher)===saved.manifest.sourceDigest,'local source record changed');const baseline=open(sourceCipher,key,'source');requireThat(digest(baseline)===saved.manifest.plaintextDigest,'local source baseline mismatch');
-      const destination=command==='fetch'?resolve(v['--out']??taskID):join(directory,'review');await mkdir(destination,{mode:0o700});extractBundle(baseline,join(destination,'baseline'),config.maxArtifactBytes);extractBundle(candidate,join(destination,'candidate'),config.maxArtifactBytes);
+      const destination=command==='fetch'?resolve(v['--out']??taskID):join(directory,'review');await mkdir(destination,{mode:0o700});const baselineData=extractBundle(baseline,join(destination,'baseline'),config.maxArtifactBytes),candidateData=extractBundle(candidate,join(destination,'candidate'),config.maxArtifactBytes);
       if(command==='fetch'){process.stdout.write(destination+'\n');return;}
       requireThat(['diff','import'].includes(command),'unknown command');const review=join(destination,'baseline');const patch=await reviewPatch(review,join(destination,'candidate'),config.maxArtifactBytes);
       if(command==='diff'){process.stdout.write(patch);return;}
-      requireThat(v['--repo'],'--repo is required for import');const repo=resolve(v['--repo']),host=['--no-optional-locks','-c','core.fsmonitor=false','-c','core.hooksPath=/dev/null','-C',repo];requireThat(!(await run('/usr/bin/git',[...host,'status','--porcelain'])).stdout.trim(),'remote import requires a clean host worktree and index');const head=(await run('/usr/bin/git',[...host,'rev-parse','HEAD'])).stdout.trim();
+      requireThat(v['--repo'],'--repo is required for import');const repo=resolve(v['--repo']);requireThat(!(await hostGit(repo,['status','--porcelain'])).stdout.trim(),'remote import requires a clean host worktree and index');const head=(await hostGit(repo,['rev-parse','HEAD'])).stdout.trim();
+      await importPreflight(repo,baselineData,candidateData,config.maxArtifactBytes);
       const transaction={schema:1,operation:'remote.import',task:taskID,grantDigest:digest(saved.manifest),candidateDigest:result.digest,patchDigest:digest(patch),hostHead:head,repo,nonce:randomBytes(32).toString('base64url')};await signManifest(transaction,directory);
-      requireThat((await run('/usr/bin/git',[...host,'rev-parse','HEAD'])).stdout.trim()===head&&!(await run('/usr/bin/git',[...host,'status','--porcelain'])).stdout.trim(),'host changed after authorization');
-      const baselineData=JSON.parse(baseline);for(const file of baselineData.files)await run('/usr/bin/git',[...host,'hash-object','-w','--stdin'],{input:Buffer.from(file.data,'base64')});
-      await run('/usr/bin/git',[...host,'apply','--3way','--index','--binary','-'],{input:patch,maxBytes:1048576});process.stdout.write('Imported and staged '+taskID+'\n');
+      requireThat((await hostGit(repo,['rev-parse','HEAD'])).stdout.trim()===head&&!(await hostGit(repo,['status','--porcelain'])).stdout.trim(),'host changed after authorization');
+      await applyRemotePatch(repo,patch,baselineData,candidateData,config.maxArtifactBytes);process.stdout.write('Imported and staged '+taskID+'\n');
     }finally{key.fill(0);}
   }finally{await rm(directory,{recursive:true,force:true});}
 }

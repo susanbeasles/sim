@@ -219,9 +219,17 @@ Use `tasks`, `hosts` and `reconcile` through `sim fleet`, and `attach TASK_ID`,
 `import TASK_ID --repo LOCAL_REPO` through `sim remote`. Append the common
 configuration/CA/connection arguments to each command. Fetch/diff/import/log
 decryption invokes the local PIV operation. Import requires a clean host tree and
-index, displays and signs the exact patch transaction, then applies a full-index
-three-way patch. Conflicts are retained for review; no automatic commit or push
-occurs. Existing local SIM import behavior is unchanged.
+index, displays and signs the exact patch transaction, then applies a full-index binary
+patch against an exact baseline. It verifies both raw files and indexed objects
+against the authorized candidate. Automatic three-way merging is unsupported;
+no automatic commit or push occurs. Changes to attribute files and active
+working-tree conversions (including ident, EOL and encoding) are rejected before
+mutation. Binary patch transport preserves arbitrary non-UTF-8 file content. Remote import ignores global/system Git configuration and refuses local
+Git filter configuration (including included configuration) before each host Git
+operation. Repositories requiring filters such as Git LFS must use a separate,
+explicitly reviewed import workflow. Review patches retain raw file bytes rather
+than candidate-selected EOL, encoding, or clean-filter normalization.
+Existing local SIM import behavior is unchanged.
 
 Use `sim fleet revoke --grant GRANT_ID` to cancel tasks and retire that grant's
 hosts, `pause` to stop dispatch and scale-out, and `resume` to resume dispatch.

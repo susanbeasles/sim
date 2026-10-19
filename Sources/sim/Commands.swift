@@ -69,6 +69,28 @@ struct SimpleParser {
     }
 }
 
+struct MergeOptions {
+    let workspace: String?
+    let selected: Set<String>?
+    let mine: Bool
+    let theirs: Bool
+
+    init(_ args: [String]) throws {
+        let p = try SimpleParser.parse(args, valueOptions: [])
+        guard p.positionals.count <= 1,
+              p.flags.isSubset(of: ["--mine", "--theirs"]),
+              !(p.has("--mine") && p.has("--theirs")),
+              !args.contains("--") || !p.remainder.isEmpty,
+              !p.remainder.contains("") else {
+            throw CLIError.usage("usage: sim git merge [NAME] [--mine|--theirs] [-- PATH ...]; paths require -- and a nonempty selection")
+        }
+        workspace = p.positionals.first
+        selected = p.remainder.isEmpty ? nil : Set(p.remainder)
+        mine = p.has("--mine")
+        theirs = p.has("--theirs")
+    }
+}
+
 struct AgentCLI {
     static let version = "0.2.0"
 
@@ -210,8 +232,7 @@ struct AgentCLI {
             let p = try SimpleParser.parse(rest, valueOptions: ["-r", "--repo"])
             guard let raw = p.positionals.first else { throw CLIError.usage("usage: agent image verify IMAGE [-r REPO] [--deep]") }
             let repo = try rt.service.resolver.resolve(p.one("-r", "--repo"))
-            let repoName = URL(fileURLWithPath: repo).lastPathComponent
-            let record = try await rt.vault.vaultStore.resolve(repoName: repoName, selector: ImageSelector(raw))
+            let record = try await rt.vault.vaultStore.resolve(repoPath: repo, selector: ImageSelector(raw))
             try await rt.vault.verify(record: record, deep: p.has("--deep"))
             print("verified generation \(record.manifest.generation) \(record.manifest.id.uuidString)")
             return 0
@@ -317,13 +338,11 @@ struct AgentCLI {
         let rest = Array(args.dropFirst())
         switch sub {
         case "merge":
-            let p = try SimpleParser.parse(rest, valueOptions: [])
-            let rt = try Runtime(); let ws = try await rt.service.resolveWorkspace(p.positionals.first)
-            let rawPaths = p.remainder
-            let selected = rawPaths.isEmpty ? nil : Set(rawPaths)
-            if p.has("--mine") { print("kept host state; nothing changed"); return 0 }
-            if p.has("--theirs") { try await rt.bridge.takeTheirs(ws, selected: selected, authorize: true); print("applied agent versions"); return 0 }
-            let conflicts = try await rt.bridge.merge(ws, selected: selected, authorize: true)
+            let p = try MergeOptions(rest)
+            let rt = try Runtime(); let ws = try await rt.service.resolveWorkspace(p.workspace)
+            if p.mine { print("kept host state; nothing changed"); return 0 }
+            if p.theirs { try await rt.bridge.takeTheirs(ws, selected: p.selected, authorize: true); print("applied agent versions"); return 0 }
+            let conflicts = try await rt.bridge.merge(ws, selected: p.selected, authorize: true)
             if conflicts.isEmpty { print("merged cleanly"); return 0 }
             print("conflicts:\n" + conflicts.map { "  \($0)" }.joined(separator: "\n")); return 1
         case "commit":

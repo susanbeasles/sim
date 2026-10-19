@@ -199,6 +199,32 @@ agent diff
 agent review
 ```
 
+Review export is bounded on the host before any guest files are written:
+
+| Resource | Limit |
+| --- | --- |
+| Archive and combined captured stdout/stderr | 64 MiB per command |
+| Regular file | 16 MiB |
+| Candidate or baseline tree | 32 MiB each |
+| Files and directories, including implicit parents | 10,000 per tree |
+| Path depth | 32 components |
+| Captured command or extraction | 120 seconds per stage |
+| Free disk space before export and during extraction | 1 GiB reserve plus 384 MiB working allowance |
+
+Export accepts regular files and directories in uncompressed USTAR with UTF-8 paths.
+Links, special files, sparse archive extensions, unsafe paths, and unsupported archive
+formats are rejected. Sparse regular files are charged by logical size. Candidates
+that exceed these limits must be reduced before review. Failed exports are removed;
+a forced controller termination can leave a bounded export that the next review removes.
+The synthetic review repository uses isolated Git configuration so host filters and
+hooks cannot amplify guest content. Candidate attributes cannot normalize reviewed
+bytes. Imports capture indexed bytes and executable modes before authorization,
+bind those snapshots into the signed transaction, and use anchored filesystem
+operations that refuse intermediate host symlinks. Host Git operations refuse
+configured filters, including included configuration; normal commit-signing
+requirements remain in effect. Filter-dependent repositories require a separate,
+explicitly reviewed import workflow.
+
 Import all candidate paths:
 
 ```bash
@@ -222,6 +248,11 @@ Selected paths:
 ```bash
 sim git merge --theirs -- src/a.ts src/b.ts
 ```
+
+Paths must follow `--`. Extra arguments before the delimiter, an empty path
+selection, unknown flags, and conflicting `--mine`/`--theirs` flags are rejected
+before opening the workspace. Omitting the delimiter selects all changed paths.
+Before authorization, imports display the resolved paths and their signed digest.
 
 Create exactly one local commit from a clean host working tree:
 
@@ -298,3 +329,13 @@ agent root inside rootless Podman containers. It includes planning for 200
 agents, encrypted evidence/results and a separate model/package gateway.
 Read its qualification requirements before deployment; real cloud capacity and
 hardware-token operation are not established by the local test suite.
+
+Installer identity configuration is fixed at `config/release.env` beside the
+trusted installer distribution. Environment-selected configuration is ignored.
+The file and every ancestor must be root-owned, without group/other write access,
+symlinks or extended ACLs. A normal user-owned checkout is therefore not an
+installation source; use a separately provisioned protected distribution.
+
+Staking requires an already provisioned dedicated bounded temporary filesystem;
+see `SECURITY.md` for its capacity checks and outstanding native qualification.
+The controller does not provision volumes or change system configuration.

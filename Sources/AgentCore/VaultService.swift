@@ -5,6 +5,7 @@ public actor VaultService {
     public nonisolated let vaultStore: VaultStore
     public nonisolated let crypto: HardwareVaultCrypto
     public nonisolated let audit: AuditLedger
+    private let exportBudget: TemplateExportBudget
     public nonisolated let runner: ProcessRunning
 
     public init(
@@ -18,6 +19,17 @@ public actor VaultService {
         self.crypto = crypto
         self.audit = AuditLedger(file: paths.audit.appendingPathComponent("control.jsonl"))
         self.runner = runner
+        self.exportBudget = TemplateExportBudget()
+    }
+
+    // Internal dependency injection keeps filesystem admission independently testable.
+    init(paths: AgentPaths, workspaceService: WorkspaceService, runner: ProcessRunning, exportBudget: TemplateExportBudget) throws {
+        self.workspaceService = workspaceService
+        self.vaultStore = try VaultStore(paths: paths)
+        self.crypto = HardwareVaultCrypto()
+        self.audit = AuditLedger(file: paths.audit.appendingPathComponent("control.jsonl"))
+        self.runner = runner
+        self.exportBudget = exportBudget
     }
 
     public func stake(workspace: WorkspaceRecord, tag: String) async throws -> StakeRecord {
@@ -30,8 +42,8 @@ public actor VaultService {
         let auth = AuthorizationGate(runner: runner, configuration: configuration)
         _ = try auth.configuredFingerprint()
 
-        let generation = try await vaultStore.nextGeneration(repoName: workspace.repoName)
-        let parent = try await vaultStore.latest(repoName: workspace.repoName)
+        let generation = try await vaultStore.nextGeneration(repoPath: workspace.repoPath)
+        let parent = try await vaultStore.latest(repoPath: workspace.repoPath)
         if let parent {
             try await verifyLineage(record: parent, auth: auth)
             guard generation == parent.manifest.generation + 1 else {
@@ -46,11 +58,11 @@ public actor VaultService {
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent("agent-stake-\(stakeID.uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: temp) }
+        try exportBudget.checkDestination(temp, stateRoot: vaultStore.paths.stateRoot)
         let plainTar = temp.appendingPathComponent("template.tar")
         let encryptedPart = temp.appendingPathComponent("template.agtvault")
 
         let wasRunning = try workspaceService.sbx.isRunning(name: workspace.sandboxName)
-        try preflightSensitiveFiles(workspace)
         let guestHead = try? workspaceService.sbx.exec(
             name: workspace.sandboxName,
             user: "root",
@@ -67,16 +79,20 @@ public actor VaultService {
             detail: "id=\(stakeID.uuidString) generation=\(generation) tag=\(cleanTag)"
         )
 
-        try workspaceService.sbx.save(name: workspace.sandboxName, tag: templateTag, output: plainTar.path)
-        let cryptoResult = try crypto.encrypt(
-            plaintext: plainTar,
-            ciphertext: encryptedPart,
-            recipientCertificateSHA256: piv
-        )
-        // `sbx template save` necessarily creates a local plaintext template as
-        // well as the exported tar. Do not leave that as an alternate path around
-        // the YubiKey unwrap ceremony for future `agent create -i ...` restores.
-        try workspaceService.sbx.removeTemplate(templateTag)
+        let cryptoResult = try workspaceService.sbx.withTemplate(
+            name: workspace.sandboxName, tag: templateTag, output: plainTar.path
+        ) {
+            try exportBudget.checkArchive(plainTar)
+            let scannedDigest = try TemplateArchive().preflight(plainTar)
+            let encrypted = try crypto.encrypt(
+                plaintext: plainTar, ciphertext: encryptedPart,
+                recipientCertificateSHA256: piv
+            )
+            guard encrypted.plaintextSHA256 == scannedDigest else {
+                throw AgentError.trustFailure("encrypted template does not match the inspected export")
+            }
+            return encrypted
+        }
 
         let objectURL = await vaultStore.objectURL(forDigest: cryptoResult.ciphertextSHA256)
         var wroteObject = false
@@ -153,11 +169,13 @@ public actor VaultService {
         makeActive: Bool = true
     ) async throws -> WorkspaceRecord {
         let repo = try workspaceService.resolver.resolve(repoInput)
-        let repoName = URL(fileURLWithPath: repo).lastPathComponent
-        let record = try await vaultStore.resolve(repoName: repoName, selector: selector)
+        let record = try await vaultStore.resolve(repoPath: repo, selector: selector)
         let config = try await workspaceService.store.loadConfiguration()
         let auth = AuthorizationGate(runner: runner, configuration: config)
         try await verifyLineage(record: record, auth: auth)
+        guard record.manifest.repoPathHint == repo else {
+            throw AgentError.unsafe("staked image belongs to a different repository path")
+        }
 
         let objectURL = await vaultStore.objectURL(for: record.manifest)
         guard FileManager.default.fileExists(atPath: objectURL.path) else {
@@ -240,7 +258,7 @@ public actor VaultService {
                 throw AgentError.trustFailure("generation \(current.manifest.generation) is missing its signed parent link")
             }
             let parent = try await vaultStore.record(id: parentID)
-            guard parent.manifest.repoName == current.manifest.repoName else {
+            guard parent.manifest.repoPathHint == current.manifest.repoPathHint else {
                 throw AgentError.trustFailure("stake lineage crosses repositories")
             }
             guard parent.manifest.generation + 1 == current.manifest.generation else {
@@ -250,36 +268,6 @@ public actor VaultService {
                 throw AgentError.trustFailure("stake parent manifest digest does not match the signed child link")
             }
             current = parent
-        }
-    }
-
-    private func preflightSensitiveFiles(_ workspace: WorkspaceRecord) throws {
-        let script = #"""
-        set -eu
-        home=$(getent passwd agent | cut -d: -f6)
-        found=0
-        for p in \
-          "$home/.aws/credentials" \
-          "$home/.config/gcloud/application_default_credentials.json" \
-          "$home/.config/rclone/rclone.conf" \
-          "$home/.netrc" \
-          "$home/.npmrc" \
-          "$home/.codex/auth.json" \
-          "$home/.claude/.credentials.json"
-        do
-          if [ -s "$p" ]; then printf '%s\n' "$p"; found=1; fi
-        done
-        if [ -d "$home/.ssh" ]; then
-          find "$home/.ssh" -maxdepth 1 -type f \( -name 'id_*' ! -name '*.pub' \) -size +0c -print 2>/dev/null || true
-        fi
-        """#
-        let result = try workspaceService.sbx.execUnchecked(name: workspace.sandboxName, user: "root", command: ["sh", "-lc", script])
-        guard result.status == 0 else {
-            throw AgentError.unsafe("could not complete secret-file stake preflight: \(result.stderrString)")
-        }
-        let hits = result.stdoutString.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
-        guard hits.isEmpty else {
-            throw AgentError.unsafe("refusing to stake a template containing credential-looking files:\n" + hits.joined(separator: "\n"))
         }
     }
 
