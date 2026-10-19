@@ -74,7 +74,7 @@ test('fleet review binds raw bytes despite candidate EOL attributes',async()=>{
 });
 
 test('real remote import rejects conversions and verifies exact staged and raw candidate bytes',async()=>{
- for(const scenario of ['plain','unchanged-attributes','invalid-utf8','autocrlf','global-filter','local-clean','local-smudge','local-process','info-ident','info-eol','info-crlf','info-encoding','candidate-attributes']){
+ for(const scenario of ['plain','same-tree-new-head','candidate-base-mismatch','unchanged-attributes','invalid-utf8','autocrlf','global-filter','local-clean','local-smudge','local-process','info-ident','info-eol','info-crlf','info-encoding','candidate-attributes']){
   const root=mkdtempSync(join(tmpdir(),'sim-exact-import-')),oldGlobal=process.env.GIT_CONFIG_GLOBAL;
   try{
    const repo=join(root,'host'),review=join(root,'review'),candidate=join(root,'candidate'),marker=join(root,'filter-ran');
@@ -105,13 +105,15 @@ test('real remote import rejects conversions and verifies exact staged and raw c
     const data=Buffer.from('*.txt working-tree-encoding=UTF-16\n');writeFileSync(join(candidate,'.gitattributes'),data);
     next.files.push({path:'.gitattributes',mode:420,data:data.toString('base64')});
    }
+   if(scenario==='candidate-base-mismatch')next.baseCommit='0'.repeat(40);
+   if(scenario==='same-tree-new-head')git(['-c','user.name=fixture','-c','user.email=fixture@invalid','commit','--allow-empty','-qm','different history']);
    const patch=await reviewPatch(review,candidate,1048576);
    if(['plain','unchanged-attributes','invalid-utf8','autocrlf'].includes(scenario)){
     await applyRemotePatch(repo,patch,baseline,next,1048576);
     assert.deepEqual(readFileSync(join(repo,'victim.txt')),after,scenario);
     assert.deepEqual(execFileSync('/usr/bin/git',['-C',repo,'show',':victim.txt']),after,scenario);
    }else{
-    await assert.rejects(()=>applyRemotePatch(repo,patch,baseline,next,1048576),/configured Git filters|conversion attributes|attribute-file transactions/,scenario);
+    await assert.rejects(()=>applyRemotePatch(repo,patch,baseline,next,1048576),/configured Git filters|conversion attributes|attribute-file transactions|baseline commit/,scenario);
     assert.deepEqual(readFileSync(join(repo,'victim.txt')),before,scenario);
     assert.equal(git(['show',':victim.txt']),before.toString(),scenario);
    }

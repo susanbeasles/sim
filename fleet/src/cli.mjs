@@ -37,6 +37,7 @@ export async function hostGit(repo,args,options={}){
 function importPaths(baseline,candidate){return [...new Set([...baseline.files,...candidate.files].map(file=>file.path))].sort();}
 function sameFiles(actual,expected){return canonical([...actual].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0))===canonical([...expected].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0));}
 async function verifyImportTree(repo,paths,expected,maxBytes){
+ requireThat((await hostGit(repo,['rev-parse','--verify','HEAD'])).stdout.trim()===expected.baseCommit,'host HEAD differs from the authorized baseline commit');
  const observed=decodeBundle(packDirectory(repo,paths,expected.baseCommit,maxBytes),maxBytes);
  requireThat(sameFiles(observed.files,expected.files),'host raw bytes or modes differ from the authorized import tree');
  const format=(await hostGit(repo,['rev-parse','--show-object-format'])).stdout.trim();
@@ -53,6 +54,7 @@ async function verifyImportTree(repo,paths,expected,maxBytes){
  }
 }
 export async function importPreflight(repo,baseline,candidate,maxBytes){
+ requireThat(candidate.baseCommit===baseline.baseCommit,'candidate baseline commit differs from the authorized source');
  // Attributes can introduce conversions during apply. Refuse attribute-file
  // transactions, and check active host/info attributes on every relevant path.
  const attributes = files=>files.filter(file=>file.path.split('/').at(-1).toLowerCase()==='.gitattributes');

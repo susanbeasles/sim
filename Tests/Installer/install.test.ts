@@ -6,13 +6,14 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 // Platform commands are doubled: this suite must never install or require sudo.
-for (const kind of ['team', 'bundle', 'valid', 'swap', 'seal', 'destination', 'stage', 'installed', 'symlink', 'config', 'acl', 'staging-private', 'umask', 'release-override', 'writable-config', 'config-link'] as const) {
-  test(`installer ${['valid', 'staging-private', 'umask', 'release-override'].includes(kind) ? `accepts ${kind}` : `rejects ${kind}`}`, () => {
+for (const kind of ['team', 'bundle', 'valid', 'swap', 'seal', 'destination', 'stage', 'installed', 'symlink', 'config', 'acl', 'staging-private', 'umask', 'release-override', 'writable-config', 'config-link', 'caller-path'] as const) {
+  test(`installer ${['valid', 'staging-private', 'umask', 'release-override', 'caller-path'].includes(kind) ? `accepts ${kind}` : `rejects ${kind}`}`, () => {
     const dir = mkdtempSync(join(tmpdir(), 'sim-install-'));
     try {
       const bin = join(dir, 'bin');
       const root = join(dir, 'repo');
       mkdirSync(bin);
+      symlinkSync(process.execPath, join(bin, 'node'));
       const oldUmask = process.umask(kind === 'umask' ? 0o077 : process.umask());
       for (const path of ['scripts', 'config', 'release/Sim.app/Contents/MacOS', 'release/Sim.app/Contents/_CodeSignature']) mkdirSync(join(root, path), { recursive: true });
       writeFileSync(join(root, 'config/release.env'), kind === 'config' ? 'AGENT_BUNDLE_ID=com.example.sim\n' : 'AGENT_BUNDLE_ID=com.example.sim\nAGENT_TEAM_ID=ABCDEFGHIJ\n');
@@ -25,6 +26,7 @@ for (const kind of ['team', 'bundle', 'valid', 'swap', 'seal', 'destination', 's
       process.umask(oldUmask);
       const source = readFileSync(resolve('scripts/install'), 'utf8')
         .replaceAll('/usr/local', join(dir, 'local'))
+        .replace('export PATH=/usr/bin:/bin:/usr/sbin:/sbin', `export PATH=${bin}:/usr/bin:/bin:/usr/sbin:/sbin`)
         .replaceAll('/usr/bin/stat', join(bin, 'stat')).replaceAll('/bin/ls', join(bin, 'ls'));
       writeFileSync(join(root, 'scripts/install'), source);
       const command = (name: string, body: string) => {
@@ -67,12 +69,15 @@ esac
 `);
       command('ls', 'echo directory; if [[ "$KIND" == acl ]]; then echo " 0: user:fixture allow add_file,delete_child"; fi');
       command('stat', 'if [[ "$2" == %Lp ]]; then if [[ "$KIND" == writable-config && "${@: -1}" == */config/release.env ]]; then echo 666; else echo 755; fi; else echo 0; fi');
+      const callerBin = join(dir, 'caller-bin'); mkdirSync(callerBin);
+      for (const name of ['stat', 'codesign', 'sudo', 'uname', 'grep', 'shasum']) { const path=join(callerBin,name); writeFileSync(path, '#!/bin/bash\necho shadowed >> '+join(dir,'shadowed')+'\nexit 0\n'); chmodSync(path,0o755); }
       const result = spawnSync('/bin/bash', [join(root, 'scripts/install')], {
-        env: { ...process.env, AGENT_RELEASE_ENV: kind === "release-override" ? override : join(root, "config/release.env"), AGENT_BUNDLE_ID: "", AGENT_TEAM_ID: "", PATH: `${bin}:${process.env.PATH}`, KIND: kind, LOG: join(dir, 'log') }, encoding: 'utf8',
+        env: { ...process.env, AGENT_RELEASE_ENV: kind === "release-override" ? override : join(root, "config/release.env"), AGENT_BUNDLE_ID: "", AGENT_TEAM_ID: "", PATH: `${kind === 'caller-path' ? callerBin+':' : ''}${bin}:${process.env.PATH}`, KIND: kind, LOG: join(dir, 'log') }, encoding: 'utf8',
       });
       assert.equal(spawnSync('/bin/test', ['-e', join(dir, 'override-executed')]).status, 1, 'untrusted configuration executed');
+      assert.equal(spawnSync('/bin/test', ['-e', join(dir, 'shadowed')]).status, 1, 'caller PATH command executed');
       const promoted = (() => { try { return readFileSync(join(dir, 'log'), 'utf8').includes('promoted'); } catch { return false; } })();
-      if (['valid', 'staging-private', 'umask', 'release-override'].includes(kind)) { assert.equal(result.status, 0, result.stderr); assert.equal(promoted, true);
+      if (['valid', 'staging-private', 'umask', 'release-override', 'caller-path'].includes(kind)) { assert.equal(result.status, 0, result.stderr); assert.equal(promoted, true);
         const events = readFileSync(join(dir, 'log'), 'utf8').trim().split('\n');
         assert.ok(events.indexOf('stripped') >= 0);
         assert.ok(events.indexOf('exposed') > events.indexOf('stripped'));

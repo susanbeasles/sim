@@ -1,5 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
+# Every identity, integrity and privileged helper must come from system paths.
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 [ "$#" -le 1 ] || { echo "usage: scripts/install [APP_PATH]" >&2; exit 64; }
 # Release identity is provisioned with the trusted installer, never selected by
