@@ -173,7 +173,15 @@ if [ -f "$ROOT/chain.log" ]; then
   # phase into the digest and must transition exactly once from start to complete.
   while IFS= read -r LINE || [ -n "$LINE" ]; do
     IFS=$'\t' read -r SEQ HEAD REL PHASE EXTRA <<< "$LINE"
-    [[ "$HEAD" =~ ^[0-9a-f]{64}$ && "$REL" =~ ^sessions/[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "malformed chain entry"
+    [[ "$HEAD" =~ ^[0-9a-f]{64}$ ]] || fail "malformed chain entry"
+    if [ -z "$PHASE" ]; then
+      [[ "$REL" =~ ^sessions/[^/]+/[^/]+$ ]] || fail "malformed chain entry"
+      case "$REL" in
+        sessions/./*|sessions/../*|*/.|*/..) fail "malformed chain entry";;
+      esac
+    else
+      [[ "$REL" =~ ^sessions/[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "malformed chain entry"
+    fi
     CANONICAL=$(printf '%s\t%s\t%s' "$SEQ" "$HEAD" "$REL")
     if [ -n "$PHASE" ]; then CANONICAL+=$(printf '\t%s' "$PHASE"); fi
     [ "$LINE" = "$CANONICAL" ] || fail "malformed chain columns"
