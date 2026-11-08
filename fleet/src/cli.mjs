@@ -3,13 +3,14 @@ import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {randomBytes,randomUUID,X509Certificate,publicEncrypt,constants} from 'node:crypto';
 import {canonical,digest,integer,identifier,requireThat} from './canonical.mjs';
+import {planExperiment} from './experiments.mjs';
 import {validateConfig,requiredHosts,canonicalCost,validateGrant} from './policy.mjs';
 import {APIClient} from './client.mjs';
 import {run} from './process.mjs';
 import {seal,open,wrapKey} from './crypto.mjs';
 import {packDirectory,extractBundle} from './artifacts.mjs';
 
-const options=['--config','--ca','--connect','--count','--profile','--seconds','--budget-micros','--repo','--vendor','--model','--owner-cert','--grant','--state','--out','--task','--max-requests','--max-output-tokens'];
+const options=['--spec','--config','--ca','--connect','--count','--profile','--seconds','--budget-micros','--repo','--vendor','--model','--owner-cert','--grant','--state','--out','--task','--max-requests','--max-output-tokens'];
 export function parseArgs(args,allowed=options){const result={positionals:[],values:{},remainder:[]};for(let i=0;i<args.length;i++){const a=args[i];if(a==='--'){result.remainder=args.slice(i+1);break;}if(a.startsWith('--')){requireThat(allowed.includes(a)&&i+1<args.length&&!Object.hasOwn(result.values,a),'unknown, repeated or missing option: '+a);result.values[a]=args[++i];}else result.positionals.push(a);}return result;}
 export function plan(config,{count,profile,seconds,maxCostMicros}){validateConfig(config);integer(count,1,config.maxAgents,'agent count');integer(seconds,30,config.maxGrantSeconds,'grant duration');integer(maxCostMicros,1,config.maxFleetMicros,'cost authorization');const hosts=requiredHosts(config,profile,count);requireThat(hosts<=config.maxHosts,'host maximum exceeded');const cost=canonicalCost(hosts,seconds,config.hostHourlyMicros);requireThat(cost<=maxCostMicros,'compute estimate exceeds budget');return{agents:count,hosts,profile,seconds,computeEstimateMicros:cost,maxCostMicros,rootless:true,configDigest:digest(config),excludes:['model inference','disks','network','audit storage']};}
 async function readJSON(path){return JSON.parse(await readFile(path,'utf8'));}
@@ -34,7 +35,15 @@ export async function reviewPatch(review,candidate,maxBytes){
 }
 export async function main(args){
   const p=parseArgs(args);const command=p.positionals[0]??'help',v=p.values;
-  if(command==='help'){process.stdout.write('sim fleet plan|authorize|create|tasks|hosts|reconcile|revoke|pause|resume|unlock\nsim remote logs|attach|fetch|diff|import TASK_ID\nRequired: --config POLICY.json; remote operations also require --ca CA.pem.\nAuthorize: --repo PATH --owner-cert PUBLIC.pem --vendor codex|claude --model ID --count N --profile NAME --seconds N --budget-micros N -- [agent arguments]\nNo cloud credentials or hardware keys are stored in images.\n');return;}
+  if(command==='help'){process.stdout.write('sim fleet experiment-plan --spec FILE (offline, no credentials)\nsim fleet plan|authorize|create|tasks|hosts|reconcile|revoke|pause|resume|unlock\nsim remote logs|attach|fetch|diff|import TASK_ID\nRequired: --config POLICY.json; remote operations also require --ca CA.pem.\nAuthorize: --repo PATH --owner-cert PUBLIC.pem --vendor codex|claude --model ID --count N --profile NAME --seconds N --budget-micros N -- [agent arguments]\nNo cloud credentials or hardware keys are stored in images.\n');return;}
+  if(command==='experiment-plan'){
+    requireThat(v['--spec'],'--spec is required');
+    const bytes=await readFile(v['--spec']);
+    requireThat(bytes.length<=1_048_576,'experiment spec must be at most 1 MiB');
+    const experiment=planExperiment(JSON.parse(bytes.toString('utf8')));
+    process.stdout.write(JSON.stringify(experiment,null,2)+'\n');
+    return;
+  }
   requireThat(v['--config'],'--config is required');const config=validateConfig(await readJSON(v['--config']));
   const state=resolve(v['--state']??'/usr/local/var/agent/fleet');const directory=await mkdtemp(join(tmpdir(),'sim-fleet-cli-'));
   const planning=()=>plan(config,{count:Number(v['--count']??1),profile:v['--profile']??'light',seconds:Number(v['--seconds']??3600),maxCostMicros:Number(v['--budget-micros'])});
